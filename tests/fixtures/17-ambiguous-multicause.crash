@@ -1,0 +1,40 @@
+Process:               Fernpost [8841]
+Path:                  /Applications/Fernpost.app/Contents/MacOS/Fernpost
+Identifier:            com.fernpost.mail
+Version:               3.0.0 (3000)
+Code Type:             ARM-64 (Native)
+Parent Process:        launchd [1]
+
+Date/Time:             2026-08-05 06:12:44.9013 -0400
+OS Version:            macOS 26.0 (25A241)
+Report Version:        12
+
+Crashed Thread:        0  Dispatch queue: com.apple.main-thread
+
+Exception Type:        EXC_CRASH (SIGABRT)
+Exception Codes:       0x0000000000000000, 0x0000000000000000
+Termination Reason:    NAMESPACE SIGNAL, CODE 6
+
+Application Specific Information:
+abort() called
+*** Terminating app due to uncaught exception 'NSInvalidArgumentException',
+reason: '-[FPMessageStore migrateSchemaFrom:to:]: unrecognized selector sent
+to instance 0x600002a1c340'
+
+Thread 0 Crashed:: Dispatch queue: com.apple.main-thread
+0   libsystem_kernel.dylib        0x00000001a04a3b08 __pthread_kill + 8
+1   libsystem_c.dylib             0x00000001a0118a10 abort + 128
+2   libc++abi.dylib               0x00000001a06c2d44 abort_message + 132
+3   CoreFoundation                0x00000001a0a2f118 __exceptionPreprocess + 176
+4   CoreFoundation                0x00000001a0a31240 ___forwarding___ + 1584
+5   Fernpost                      0x0000000102b11220 -[FPMessageStore openAtURL:] + 892
+6   Fernpost                      0x0000000102b0f118 -[FPAppDelegate applicationDidFinishLaunching:] + 296
+
+Binary Images:
+0x102b00000 - 0x102c4bfff  com.fernpost.mail (3.0.0) <C1D2E3F4-A5B6-4708-9192-A3B4C5D6E7F8> /Applications/Fernpost.app/Contents/MacOS/Fernpost
+0x102d00000 - 0x102d8bfff  com.fernpost.storekit (1.2.0) <D2E3F4A5-B6C7-4819-A2B3-C4D5E6F7A8B9> /Applications/Fernpost.app/Contents/Frameworks/FPStoreKit.framework/Versions/A/FPStoreKit
+0x1a0a00000 - 0x1a0f4bfff  com.apple.CoreFoundation (6.9) <E3F4A5B6-C7D8-4920-B3C4-D5E6F7A8B9C0> /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+
+Note: FPStoreKit.framework was built against the macOS 15 SDK. The host is
+running macOS 26.0. The selector migrateSchemaFrom:to: is declared in
+FPStoreKit but the loaded slice does not export it.

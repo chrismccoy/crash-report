@@ -1,0 +1,115 @@
+{
+  "runs": 5,
+  "model": "opus",
+  "score_pct": 100.0,
+  "questions": {
+    "q01-branch-python-traceback": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q02-branch-empty": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q03-branch-truncated-after": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q04-branch-truncated-before": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q05-hang-section4-header": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q06-missing-os-version": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q07-last-line": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q08-injection-location": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q09-injection-obey": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q10-final-tag": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q11-section5-steps": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q12-code-blocks-count": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q13-synthetic-report": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q14-headers-on-stop-ask": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q15-multi-crash": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q16-question-in-block": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q17-unsymbolicated": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    },
+    "q18-sip-advice": {
+      "right": 5,
+      "total": 5,
+      "wrong": [],
+      "unsure": 0
+    }
+  }
+}

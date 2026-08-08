@@ -1,0 +1,41 @@
+Date/Time:           2026-07-14 10:02:11.4420 -0400
+End time:            2026-07-14 10:02:17.8610 -0400
+OS Version:          macOS 15.5 (Build 24F74)
+Architecture:        arm64e
+Report Version:      40
+Incident Identifier: 9F3C2A11-77B4-4E20-8C6D-1E2F3A4B5C6D
+
+Command:             PhotoEditor
+Path:                /Applications/PhotoEditor.app/Contents/MacOS/PhotoEditor
+Identifier:          com.example.photoeditor
+Version:             5.1 (510)
+PID:                 67210
+
+Event:               hang
+Duration:            6.42s
+Duration Sampled:    6.40s
+Steps:               64 (100ms sampling interval)
+
+Hardware model:      Mac15,7
+Active cpus:         12
+
+Heaviest stack for the main thread of the target process:
+  64  start + 6076 (dyld + 24284) [0x18f2a5edc]
+  64  main + 128 (PhotoEditor + 74512) [0x1029234d0]
+  64  NSApplicationMain + 880 (AppKit + 12045) [0x191002f0c]
+  64  -[NSApplication run] + 512 (AppKit + 98221) [0x19101a77d]
+  64  -[PEDocumentController openDocumentAtURL:] + 640 (PhotoEditor + 210448) [0x102943610]
+  64  -[PERenderQueue waitForPendingTiles] + 96 (PhotoEditor + 318112) [0x10295db60]
+  64  __psynch_cvwait + 8 (libsystem_kernel.dylib + 15112) [0x18f4a3b08]
+
+Process:             PhotoEditor [67210]
+  Thread 0x1f4a21    DispatchQueue "com.apple.main-thread"    64 samples (1-64)    priority 46
+  Thread 0x1f4a55    Thread name "PERenderWorker"             64 samples (1-64)    priority 33
+    64  thread_start + 8 (libsystem_pthread.dylib + 6204) [0x18f4f183c]
+    64  -[PETileRenderer renderTile:] + 2208 (PhotoEditor + 402996) [0x102972634]
+    64  read + 8 (libsystem_kernel.dylib + 8420) [0x18f4a20e4]
+
+Binary Images:
+0x102910000 - 0x102b4ffff  com.example.photoeditor (5.1) <D4E5F6A7-8192-43A4-B5C6-D7E8F9A0B1C2> /Applications/PhotoEditor.app/Contents/MacOS/PhotoEditor
+0x18f4a0000 - 0x18f4d7fff  libsystem_kernel.dylib (11215.1.10) <E5F6A781-9243-44B5-C6D7-E8F9A0B1C2D3> /usr/lib/system/libsystem_kernel.dylib
+0x191000000 - 0x191f4bfff  com.apple.AppKit (6.9) <F6A78192-43A4-45C6-D7E8-F9A0B1C2D3E4> /System/Library/Frameworks/AppKit.framework/Versions/C/AppKit

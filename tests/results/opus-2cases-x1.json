@@ -1,0 +1,84 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 1,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 0.15884199999999998,
+  "results": [
+    {
+      "case_id": "01-valid-dyld",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "branch \u2014 expected render, got stop_ask",
+        "all_six_headers_in_order \u2014 got []",
+        "contains:dyld",
+        "section3_regex \u2014 no match in section body"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": false,
+          "detail": "expected render, got stop_ask"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": false,
+          "detail": "got []"
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains:dyld",
+          "ok": false,
+          "detail": ""
+        },
+        {
+          "name": "section3_regex",
+          "ok": false,
+          "detail": "no match in section body"
+        }
+      ],
+      "response": "The report you pasted is the sample/placeholder text, not an actual crash log \u2014 could you paste the real `.ips`, `.crash`, or Console excerpt from the affected Mac?\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "02-empty",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected stop_ask, got stop_ask"
+        },
+        {
+          "name": "no_h2_headers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_nonblank_lines<=4",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "The crash report block is empty \u2014 could you paste the full `.ips`, `.crash`, or Console excerpt, including the Exception Type and Termination Reason lines?\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

@@ -1,0 +1,1181 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 3,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 1.6714660000000001,
+  "results": [
+    {
+      "case_id": "01-valid-codesign",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)code.?sign",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, symbolicated, complete (Binary Images table present and terminated).\n\n## 1. What happened\n\nChartwright shut down immediately after it started up, at the moment it tried to load one of its own add-on components. macOS refused to run that component because its security seal did not match its contents, so the system killed the app.\n\n## 2. The core issue\n\nA code page of the bundled framework `NGPlotEngine` failed signature validation. `Termination Reason: CODESIGNING 2 Invalid Page` and `Exception Type: EXC_CRASH (SIGKILL (Code Signature Invalid))` mean the kernel terminated the process (SIGKILL \u2014 an immediate, uncatchable kill) rather than the app choosing to exit. Code signing seals a binary by storing a hash of every page; when a page is read into memory and its hash does not match the seal, macOS kills the process. The Application Specific Information block names the exact file \u2014 `/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine` \u2014 with `code signature invalid (errno=1)` and `codeBlobOffset=0x0041C000`. The most likely cause is that this framework binary was altered on disk after it was signed, or its signature was stripped/replaced without re-sealing.\n\nAlternative reading: the file is intact but its pages cannot be validated because the app bundle was copied in a way that damaged the framework's `Versions/A` symlink structure or extended attributes \u2014 would be confirmed by running `codesign --verify --deep --strict /Applications/Chartwright.app` and checking whether it reports a modified resource versus a valid seal.\n\n## 3. Why it happened\n\nThe signature check fires when `dyld` (the dynamic linker \u2014 the part of macOS that maps executable code into a running process) maps the framework's segments. Frame 3 of thread 0 shows `dyld4::APIs::dlopen_from`, so this framework was loaded on demand via `dlopen()` (a runtime call that loads a library after the app is already running), not linked at launch. `System Integrity Protection: enabled` is recorded, and on this Mac \u2014 `OS Version: macOS 15.5 (24F74)`, `Code Type: ARM-64 (Native)` \u2014 Apple silicon enforces valid code signatures for all executable pages with no opt-out. Anything that rewrites a signed binary invalidates the seal: post-signing modification, a corrupted or partial download, a build/CI step that touches the binary after `codesign` ran, or an installer that copies the bundle without preserving symlinks and metadata. The report gives no team identifier or entitlement fields, so a Team ID mismatch cannot be confirmed or ruled out from this evidence.\n\n## 4. Why it crashed this way\n\nNo crash occurred inside the app's own logic. The backtrace is short and unambiguous: frame 5 is `CWAppDelegate.applicationDidFinishLaunching(_:)`, frame 4 is `NGPluginHost.loadRenderer()`, so the app had launched successfully and was in its startup callback when it asked for the plugin. Frames 3 through 0 are all in `dyld` \u2014 `dlopen_from`, `JustInTimeLoader::makeLaunchLoader`, `Loader::mapSegments`, and finally `SyscallDelegate::mapFileReadable`, which is where the file's pages are mapped into memory. Validation happens at that mapping step, so the failure surfaces in dyld rather than in Chartwright's code. `Exception Codes: 0x0000000000000000, 0x0000000000000000` carry no additional detail; the useful signal is entirely in the Termination Reason and the dyld message. `Exception Note: EXC_CORPSE_NOTIFY` simply means the kernel preserved the dead process so this report could be written. Because SIGKILL is delivered by the kernel, no exception handler or `dlopen` error path in the app could intercept it \u2014 hence a hard termination instead of a graceful \"plugin failed to load\" message. The distinction matters for diagnosis: this is a runtime failure at first-launch plugin load, not a missing-library failure, since dyld found the file and rejected its contents.\n\n## 5. The fix (developer-side)\n\n1. Verify the shipped bundle and identify what is unsealed:\n   ```\n   codesign --verify --deep --strict --verbose=4 /Applications/Chartwright.app\n   codesign -dvvv /Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   spctl -a -vvv -t exec /Applications/Chartwright.app\n   ```\n2. Confirm nothing modifies the framework binary after signing \u2014 strip, install_name_tool, `otool`-based patching, resource copying, or a post-build script running after the \"Sign\" phase in Xcode's Build Phases order.\n3. Sign inside-out: sign each embedded framework first, then the outer app, and set \"Other Code Signing Flags\" so nested code is not re-signed after the outer seal:\n   ```\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: ...\" \\\n     Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: ...\" Chartwright.app\n   ```\n4. Ship as a signed disk image or `pkg` and notarize it (notarization \u2014 Apple's automated scan that staples an approval ticket to the build), so the framework's symlinks and metadata survive distribution intact:\n   ```\n   xcrun notarytool submit Chartwright.dmg --keychain-profile \"AC\" --wait\n   xcrun stapler staple Chartwright.dmg\n   ```\n5. Make `loadRenderer()` fail gracefully \u2014 check the `dlerror()` string and present a repair prompt \u2014 so a bad plugin never reaches an unrecoverable state at startup. Note this only improves reporting; SIGKILL from an invalid page cannot be caught.\n6. Add a CI gate that runs `codesign --verify --deep --strict` on the final artifact before release, and validate on Apple silicon specifically, where signature enforcement is unconditional.\n\n## 6. The fix (user-side)\n\n1. Delete `/Applications/Chartwright.app`, empty the Trash, and re-download version 11.3.0 from the official source \u2014 a partial or interrupted download is the most common cause of this exact error.\n2. If you installed by dragging the app out of a `.zip` or copying it between drives or servers, install from the developer's `.dmg` or installer package instead; copying can damage the internal file links this app relies on.\n3. If any tool has touched the app \u2014 an \"app cleaner,\" an optimizer, an antivirus quarantine/repair, or a plugin patch \u2014 remove that modification and reinstall a clean copy.\n4. If a fresh reinstall still fails, send the developer this report and note the file named in it: `Contents/Frameworks/NGPlotEngine.framework`. Do not disable macOS security protections to work around it.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "01-valid-codesign",
+      "run": 2,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)code.?sign",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report (text format), single crash, symbolicated backtrace, report appears complete.\n\n## 1. What happened\n\nChartwright quit immediately after starting up because macOS decided one of the app's own bundled components had been altered or damaged. The system refused to load it and shut the app down for safety.\n\n## 2. The core issue\n\nThe app called `dlopen()` (a function that loads a code library while the program is already running) on its bundled framework at `/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine`, and dyld (the dynamic linker \u2014 the part of macOS that maps libraries into a running process) rejected it with `code signature invalid (errno=1)`. Termination Reason reads `CODESIGNING 2 Invalid Page`, meaning the actual bytes on a memory page of that framework did not match what its code signature (a cryptographic seal recording the exact contents of each page at signing time) promised. The Application Specific Information block names the exact signature blob involved: `codeBlobOffset=0x0041C000, codeBlobSize=0x00009B40`. Because the mismatch is at page level rather than a missing or malformed signature, the file was signed at some point but its contents no longer match that seal. Alternative reading: the framework's signature is intact but is rejected by Library Validation because it is signed by a different Team ID than the main app \u2014 would be confirmed by checking `codesign -dvvv` on both binaries and the app's `com.apple.security.cs.disable-library-validation` entitlement.\n\n## 3. Why it happened\n\nThe framework lives inside the app bundle (`Contents/Frameworks/`), so it is the developer's own code, not a system library. Its bytes diverged from its signature \u2014 the usual causes are modifying a binary after signing it (running `install_name_tool`, `strip`, or a bundling script post-signature), signing the outer app without re-signing the nested framework, or the file being corrupted or partially written during download, copy, or update. The `OS Version: macOS 15.5 (24F74)` field shows a current OS, and `Code Type: ARM-64 (Native)` on an Apple Silicon Mac means signature enforcement is unconditional \u2014 arm64 binaries must carry a valid signature, with no ad-hoc escape that Intel builds historically enjoyed. `System Integrity Protection: enabled` is the default state and is not itself the cause. Nothing in the report points to a missing library or an OS version mismatch; the file was found, it simply failed verification.\n\n## 4. Why it crashed this way\n\nException Type is `EXC_CRASH (SIGKILL (Code Signature Invalid))` \u2014 SIGKILL is an unblockable termination signal, so the process was killed outright by the kernel rather than being allowed to handle an error. Frame 5 of thread 0 is `CWAppDelegate.applicationDidFinishLaunching(_:)`, which places the failure at launch time, in the app's startup callback, not during later use. Frame 4, `NGPluginHost.loadRenderer()`, is the app's own code deliberately loading the plugin framework at runtime. Frames 3 through 0 walk into dyld: `dlopen_from` \u2192 `makeLaunchLoader` \u2192 `Loader::mapSegments` \u2192 `SyscallDelegate::mapFileReadable`, which is the moment dyld asks the kernel to map the framework's pages into memory. The kernel validates each page against the signature at that mapping step and returned `errno=1` (EPERM, \"operation not permitted\"), which is why the crash sits in the mapping helper rather than in the app. Because this happened inside `dlopen()` \u2014 a runtime load rather than a link-time dependency \u2014 the app got far enough to reach `main` (frame 7) and post `-[NSApplication _postDidFinishNotification]` (frame 6) before dying, which is why this presents as a crash a moment after the icon bounces rather than an instant nothing-happens failure. `Exception Codes: 0x0...0, 0x0...0` carry no additional address information, consistent with a policy kill rather than a memory fault.\n\n## 5. The fix (developer-side)\n\n1. Verify the shipped bundle to confirm the finding:\n   ```\n   codesign --verify --deep --strict --verbose=4 /Applications/Chartwright.app\n   codesign -vvv /Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   ```\n2. Audit the build pipeline for any step that touches a binary *after* signing \u2014 `install_name_tool`, `strip`, `lipo`, resource injection, or a version-stamping script. Move every such step before the signing step.\n3. Sign inside-out: nested frameworks first, then the outer app. Never rely on a single outer sign to cover already-signed nested code.\n   ```\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: ...\" \\\n     Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: ...\" Chartwright.app\n   ```\n4. Confirm both binaries carry the same Team ID via `codesign -dvvv`. If the framework is legitimately from a third party with a different Team ID, either re-sign it under your identity or add `com.apple.security.cs.disable-library-validation` to the app's entitlements (Library Validation = the hardened runtime rule that only lets a process load code signed by the same team or Apple).\n5. Use `ditto` rather than `cp` or a zip tool when packaging or copying the bundle, so extended attributes and signature metadata survive intact.\n6. Notarize and staple the final artifact, then test from a fresh download on a clean machine \u2014 not the build machine, where a stale copy may mask the problem.\n\n## 6. The fix (user-side)\n\n1. Delete the app: drag `/Applications/Chartwright.app` to the Trash, then empty the Trash.\n2. Download a fresh copy directly from Northgate's official site or the Mac App Store, and install it again \u2014 a truncated or interrupted download is a common cause of this exact failure.\n3. If you use any antivirus, \"app cleaner,\" or optimizer utility, exclude the Applications folder from it; these tools sometimes modify app files and invalidate their seal.\n4. If the fresh copy still fails, send this crash report to the developer and note that the message reads `code signature invalid` for `NGPlotEngine.framework` \u2014 it is a packaging problem on their side, not something you can repair.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "01-valid-codesign",
+      "run": 3,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)code.?sign",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy crash report (`.crash`), single crash, symbolicated backtrace, report appears complete (Binary Images table and VM Region Summary both present).\n\n## 1. What happened\nThe app started up, tried to load one of its own bundled add-on components, and macOS immediately shut the app down because that component's security seal did not match its contents. The app never got past its launch sequence.\n\n## 2. The core issue\nmacOS refused to run `NGPlotEngine.framework` because its code signature (the cryptographic seal that proves a binary has not been altered since the developer signed it) failed validation. The Application Specific Information states plainly: `code signature invalid (errno=1)` for `/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine`. `Termination Reason: CODESIGNING 2 Invalid Page` means a specific memory page of that binary did not hash-match the values recorded in its signature, so the kernel killed the process rather than execute unverified code. The exception line confirms the mechanism: `EXC_CRASH (SIGKILL (Code Signature Invalid))` \u2014 SIGKILL is an unblockable termination signal sent by the system, not a fault inside the app's own logic. The most likely cause is that the framework binary was modified, replaced, or damaged after it was signed.\n\nAlternative reading: the framework was signed with a different identity or was never re-signed after a post-build modification \u2014 would be confirmed by running `codesign -dvvv` on the framework and comparing its `TeamIdentifier` and `CDHash` against the outer app bundle.\n\n## 3. Why it happened\nThe crash log shows the framework being opened at runtime via `dlopen` (frame 3, `dyld4::APIs::dlopen_from`) rather than being linked at launch, so its signature was validated only at that moment. On `Code Type: ARM-64 (Native)` \u2014 Apple Silicon \u2014 every executable page must carry a valid signature; there is no unsigned-code path, unlike older Intel Macs. The reported `sliceOffset=0x00000000, codeBlobOffset=0x0041C000, codeBlobSize=0x00009B40` indicates the signature blob was found and parsed, so this is a content mismatch, not a missing signature. `System Integrity Protection: enabled` confirms the platform's enforcement was fully active. Common origins of this exact state are a post-signing build step that rewrote the binary, a partial or corrupted install, or a third-party/updater process replacing the framework in place.\n\n## 4. Why it crashed this way\nThis was a runtime crash during launch, not a link-time failure: `main` (thread 0, frame 7) had already run, AppKit had reached `-[NSApplication _postDidFinishNotification]` (frame 6), and the app's own `CWAppDelegate.applicationDidFinishLaunching(_:)` (frame 5) called `NGPluginHost.loadRenderer()` (frame 4). That call entered `dlopen` (frame 3 \u2014 the function that loads a library on demand), which handed off to dyld (the dynamic linker, the part of macOS that maps libraries into memory). Frames 2 through 0 show dyld mapping the framework's segments: `JustInTimeLoader::makeLaunchLoader`, `Loader::mapSegments`, then `SyscallDelegate::mapFileReadable`, where the kernel verifies each page against the signature as it is mapped. The verification failed there, which is why `Termination Reason` names an *Invalid Page* rather than a missing or malformed signature. Because the kernel kills such a process outright, the app had no opportunity to catch an error or fall back to a no-plugin mode \u2014 `dlopen` never returned. `Exception Codes: 0x0000000000000000, 0x0000000000000000` carry no additional detail, consistent with a policy kill rather than a memory fault. Only three binaries appear in Binary Images (the app, dyld, AppKit), confirming `NGPlotEngine` was never successfully mapped.\n\n## 5. The fix (developer-side)\n1. Confirm the mismatch locally on the shipped bundle:\n   ```\n   codesign -vvv --strict /Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   codesign -dvvv /Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   ```\n2. Audit the build for any step that touches the framework binary *after* signing \u2014 `strip`, `install_name_tool`, resource copying, or a custom Run Script phase. Move all of it before the signing step; any byte changed after signing produces exactly this `Invalid Page` result.\n3. Re-sign inside-out (nested code first, app bundle last), using the same identity for both:\n   ```\n   codesign --force --options runtime --timestamp \\\n     -s \"Developer ID Application: ...\" \\\n     Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   codesign --force --options runtime --timestamp \\\n     -s \"Developer ID Application: ...\" Chartwright.app\n   ```\n4. Verify Gatekeeper acceptance (Gatekeeper is macOS's policy check on downloaded software) before shipping: `spctl -a -vvv -t exec Chartwright.app`.\n5. Notarize and staple the ticket (notarization is Apple's automated malware scan of a signed build), then re-verify the whole bundle after stapling.\n6. Ship via a signed DMG or `.pkg` rather than a loose folder or an updater that overwrites `Contents/Frameworks` in place, since in-place replacement is a frequent source of this failure on installed copies.\n\n## 6. The fix (user-side)\n1. Drag `/Applications/Chartwright.app` to the Trash and empty it \u2014 a partially damaged copy cannot be repaired in place.\n2. Re-download Chartwright 11.3.0 from the vendor's official site or the Mac App Store and install the fresh copy.\n3. If you installed any Chartwright plugins, add-ons, or third-party patches, do not reinstall them yet; test the clean app first, since an add-on replacing `NGPlotEngine` would cause exactly this.\n4. If it still quits on launch, send this crash report to Northgate support and mention `CODESIGNING 2 Invalid Page` \u2014 the signed build itself may be at fault, which only they can correct.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "06-unsymbolicated",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)unsymbolicated|not symbolicated",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains:dSYM",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_gap_sections<=3",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, unsymbolicated (frames show raw addresses with `???` and `0 + offset` instead of symbol names), and incomplete \u2014 only thread 3 is listed and the usual trailing summary sections after `Binary Images` are absent.\n\n## 1. What happened\n\nLedgerSync was running normally and then quit unexpectedly when one of its background tasks tried to use something that wasn't there. This was a runtime failure, not a startup or installation problem.\n\n## 2. The core issue\n\nThe app dereferenced a null pointer \u2014 `Exception Type: EXC_BAD_ACCESS (SIGSEGV)` (a memory-access violation: the process touched memory it is not allowed to touch) with `Exception Codes: KERN_INVALID_ADDRESS at 0x0000000000000010`. Address `0x10` is 16 bytes past address zero, the classic signature of reading a field or calling through a member of an object that was never initialized or was already released. The register dump backs this up: `rax: 0x0000000000000000` (a null value) and `rcx: 0x0000000000000010` (that value plus a 16-byte field offset). The faulting thread is `Crashed Thread: 3`, and frames 2 and 3 are inside LedgerSync's own image (`0x10a2f4118` and `0x10a301b90`, both within the `0x10a2c0000 - 0x10a44bfff` range listed in Binary Images), so app code is on the stack when it happens. Frames 0 and 1 (`0x00007ff8091a4c50`, `0x00007ff8091b1a34`) fall outside every range in the Binary Images table, so the immediate caller cannot be attributed to any named library from this report.\n\n*Alternative reading:* memory corruption or a use-after-free rather than a plain uninitialized pointer \u2014 frame 6 is `0x0000000000000000`, and a zeroed return address at the base of the stack can indicate a damaged frame chain; this would be confirmed by running the same workload under Address Sanitizer or Zombie Objects and by a symbolicated trace for frames 0\u20131.\n\n## 3. Why it happened\n\n`Code Type: X86-64 (Translated)` means this is an Intel (x86-64) build running under Rosetta 2 (Apple's translation layer that runs Intel binaries on Apple Silicon Macs), so the app ships no native arm64 slice for this machine. The crash is on thread 3 while frames 4 and 5 sit in `libsystem_kernel.dylib` and `libsystem_pthread.dylib`, i.e. a worker thread the app spawned itself, which is where uninitialized-state and race-condition bugs typically surface. Beyond that, the report does not name the function or object involved, because the backtrace carries no symbols. The OS is `macOS 14.5 (23F79)` and there is no `Termination Reason` pointing at dyld (the dynamic linker, which loads shared libraries at launch), code signing, or a sandbox denial \u2014 `Termination Reason: NAMESPACE SIGNAL, CODE 11` is simply the segmentation-fault signal restated. So nothing here indicates a missing framework, an entitlement problem, or a Gatekeeper/notarization issue.\n\n## 4. Why it crashed this way\n\nNo termination came from the OS policy layer; the process killed itself with a hardware memory fault. The kernel reported `KERN_INVALID_ADDRESS at 0x0000000000000010`, meaning nothing is mapped at that address and never will be \u2014 page zero is deliberately left unmapped so that null dereferences fail immediately and loudly rather than corrupting data. Because `rip: 0x00007ff8091a4c50` matches frame 0, the fault happened at the instruction currently executing in an unattributed image, not in LedgerSync's own code directly. LedgerSync's frames 2 and 3 are the callers, so the app handed a bad or null value into that code rather than crashing on its own instruction. This was a runtime crash, not a launch crash: the app had reached the point of creating and running secondary threads, and thread 3 was executing app logic when it failed. The presence of `libsystem_pthread.dylib` at frame 5 confirms thread 3 is a pthread the app started. Frame 6 reading `0x0000000000000000` is not a real frame; it is the null terminator at the base of a thread stack or a sign the unwinder lost the chain. Because the whole backtrace is unsymbolicated, the specific function, class, and line cannot be named from this report alone.\n\n## 5. The fix (developer-side)\n\n1. Symbolicate before anything else. Find the `.dSYM` (debug symbol bundle produced alongside a release build) whose UUID matches `A7819243-A4B5-46D7-E8F9-A0B1C2D3E4F5` and resolve the app frames:\n   ```\n   atos -o LedgerSync.app.dSYM/Contents/Resources/DWARF/LedgerSync \\\n        -arch x86_64 -l 0x10a2c0000 0x10a2f4118 0x10a301b90\n   ```\n2. Once frames 2 and 3 are named, audit that code path for a pointer or object reference used before assignment or after release \u2014 the `0x10` offset says a member was read off a null base.\n3. Because the crash is on a spawned pthread (thread 3), check that any shared state it touches is created before the thread starts and guarded (`NSLock`, a serial `DispatchQueue`, or `@synchronized`); a torn-down-while-in-use object produces exactly this fault.\n4. Reproduce under Xcode's diagnostics: enable **Address Sanitizer**, **Zombie Objects**, and **Thread Sanitizer** in the scheme's Run > Diagnostics tab, then exercise the same background workload.\n5. Ship a universal binary so this stops running under translation \u2014 set `ARCHS = arm64 x86_64` (Build Settings > Architectures), rebuild, and verify with `lipo -archs /Applications/LedgerSync.app/Contents/MacOS/LedgerSync`.\n6. Add a defensive early return or assertion at the entry to that thread's work function so a null dependency logs a diagnostic instead of faulting.\n\n## 6. The fix (user-side)\n\n1. Quit and relaunch LedgerSync \u2014 this was a runtime fault, not an install problem, so a restart will usually get you working again.\n2. Note what you were doing right before the crash (which sync, which file, which window) and send that to the developer with this crash report; it is the fastest route to a fix.\n3. Check for an app update: **LedgerSync menu > Check for Updates**, or the App Store's Updates tab. Version `2.0.4 (2040)` is what crashed, and a newer build may already address it.\n4. Ask the developer for an Apple Silicon (arm64) build \u2014 your copy is the Intel version running through Rosetta translation, and a native build will also run faster.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "06-unsymbolicated",
+      "run": 2,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)unsymbolicated|not symbolicated",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains:dSYM",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_gap_sections<=3",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` text crash report, single crash, unsymbolicated \u2014 frames show raw addresses and `???` with no symbol names, so per-frame attribution is limited.\n\n## 1. What happened\nThe app was running normally and then quit suddenly while doing background work. One of its background tasks tried to use a piece of memory that wasn't there, and macOS shut the app down.\n\n## 2. The core issue\nThe crash is a memory access fault: `Exception Type: EXC_BAD_ACCESS (SIGSEGV)` (EXC_BAD_ACCESS \u2014 the app touched an address the memory system refused; SIGSEGV \u2014 the Unix \"segmentation fault\" signal for exactly that). `Exception Codes: KERN_INVALID_ADDRESS at 0x0000000000000010` points at address 16, and the register dump backs it up: `rax: 0x0000000000000000` with `rcx: 0x0000000000000010` \u2014 the classic shape of reading a field 16 bytes into an object pointer that was null. Frames 2 and 3 of the crashed thread sit inside `LedgerSync` itself (`0x000000010a2f4118` and `0x000000010a301b90`, both within the app's image range `0x10a2c0000 - 0x10a44bfff` from Binary Images), so the bad pointer originates in the app's own code, not in a system framework. Alternative reading: a use-after-free, where the object was valid earlier and freed by another thread \u2014 would be confirmed by running with Zombie Objects or MallocStackLogging enabled and seeing a freed-object message instead of a null read.\n\n## 3. Why it happened\nThe report shows no missing library, no code-signing or entitlement failure, and no launch-time abort \u2014 `Termination Reason: NAMESPACE SIGNAL, CODE 11` is just the segmentation signal, so this is an ordinary in-app pointer bug rather than an environment problem. `Code Type: X86-64 (Translated)` means an Intel-only build is running under Rosetta 2 (Apple's translation layer that runs x86-64 code on Apple Silicon Macs), so the machine is Apple Silicon and the app ships no native `arm64` slice. Nothing in the report attributes the fault to translation itself; it is recorded here as context, not as the cause. `OS Version: macOS 14.5 (23F79)` shows a current, supported system, so this is not an OS feature-gating mismatch. The exact API that returned or held the null value cannot be named because frames 0 and 1 are `???` at `0x00007ff8091a4c50` and `0x00007ff8091b1a34`, addresses that fall outside every range listed in Binary Images.\n\n## 4. Why it crashed this way\nThis was a runtime crash, not a launch failure: the faulting thread is `Crashed Thread: 3`, a worker thread, and frame 5 is `libsystem_pthread.dylib` (the system library that implements threads), meaning the app had been running long enough to spawn and use background threads. The stack reads outward from the fault at frame 0 through two unresolved system frames, into the app's own code at frames 2 and 3, then down into `libsystem_kernel.dylib` and `libsystem_pthread.dylib` \u2014 the app called into system code, which then dereferenced the bad pointer. Because the target address `0x10` lies in the first page of memory, which macOS deliberately leaves unmapped to catch null pointer bugs, the hardware trapped immediately and the kernel delivered SIGSEGV rather than letting corrupted data spread. Frame 6 shows `0x0000000000000000`, an address of zero \u2014 the stack walk hit a null return address and stopped, which is consistent with a damaged or simply exhausted frame chain at the thread's root. The unresolved frames 0 and 1 are the reason no specific system API can be blamed: their addresses are not covered by any entry in the Binary Images table, so the crash reporter had nothing to resolve them against. Everything actionable therefore rests on frames 2 and 3, both inside `LedgerSync` at offsets `+213272` and `+269200` from the load address `0x10a2c0000`.\n\n## 5. The fix (developer-side)\n1. Symbolicate the two app frames first (symbolication \u2014 mapping addresses back to source lines using the debug-symbol bundle produced at build time). Locate the `.dSYM` matching UUID `A7819243-A4B5-46D7-E8F9-A0B1C2D3E4F5` and run:\n   ```\n   atos -o LedgerSync.app.dSYM/Contents/Resources/DWARF/LedgerSync \\\n        -arch x86_64 -l 0x10a2c0000 0x10a2f4118 0x10a301b90\n   ```\n2. Inspect the two resolved call sites for a pointer or object reference used without a nil/null check before being passed into a system call.\n3. Reproduce under the Address Sanitizer and with Zombie Objects enabled (Product > Scheme > Edit Scheme > Diagnostics) to separate a plain null from a use-after-free.\n4. Since the fault is on a secondary thread, audit shared state reachable from that code path with the Thread Sanitizer; a pointer nulled or freed by another thread mid-use fits the evidence.\n5. Ship a universal binary \u2014 `Code Type: X86-64 (Translated)` shows this build has no `arm64` slice; set `ARCHS = $(ARCHS_STANDARD)`, rebuild, and confirm with `lipo -archs /Applications/LedgerSync.app/Contents/MacOS/LedgerSync`.\n6. Add a crash-reporting hook that captures the same thread's symbolicated stack in the field, so future reports arrive with frames 0 and 1 resolved.\n\n## 6. The fix (user-side)\n1. Reopen the app and note what you were doing when it quit \u2014 background sync or export activity is the likely trigger, since the crash was on a background task.\n2. Check for an update: the app's own menu, the App Store, or the developer's site \u2014 version `2.0.4 (2040)` is what crashed.\n3. Ask the developer whether a native Apple Silicon build is available; your Mac is currently running this app through Rosetta 2 translation.\n4. Send the developer this crash report along with the steps that led to it; the fault is inside the app's code and only they can correct it.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "06-unsymbolicated",
+      "run": 3,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)unsymbolicated|not symbolicated",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains:dSYM",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_gap_sections<=3",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, unsymbolicated (frames show raw addresses and `???` with no symbol names), and incomplete \u2014 the paste ends after the Binary Images table with no trailing summary sections.\n\n## 1. What happened\n\nThe app was running normally and then quit unexpectedly while doing work in the background. One of its background tasks tried to read data from a memory location that held nothing, and macOS shut the app down on the spot.\n\n## 2. The core issue\n\n`Exception Type: EXC_BAD_ACCESS (SIGSEGV)` with `Exception Codes: KERN_INVALID_ADDRESS at 0x0000000000000010` means the process touched memory it does not own (EXC_BAD_ACCESS is the Mach exception for an invalid memory access; SIGSEGV is the matching Unix \"segmentation fault\" signal). The address `0x10` is 16 bytes past zero \u2014 the classic signature of reading a field off a pointer that was null rather than a real object. The register state supports this directly: `rax: 0x0000000000000000` and `rcx: 0x0000000000000010`. The app's own code is on the stack at frames 2 and 3 (`LedgerSync 0x10a2f4118` and `0x10a301b90`), so the bad value originated in or was passed from application code. Frames 0 and 1 sit at `0x00007ff8091a4c50` and `0x00007ff8091b1a34`, addresses that fall inside no image listed in the Binary Images table, so the callee cannot be named from this report.\n\nAlternative reading: a translation-layer or thread-safety fault specific to running an x86-64 binary under Rosetta 2 (`Code Type: X86-64 (Translated)`) \u2014 would be confirmed by checking whether the app ships an `arm64` slice (`lipo -archs`) and whether a native build reproduces the same fault.\n\n## 3. Why it happened\n\nNot determinable from this report \u2014 need a symbolicated backtrace (the matching `.dSYM`) for frames 2 and 3 to identify which application call produced the null pointer.\n\nContext that is anchored in the report: `Code Type: X86-64 (Translated)` indicates the binary contains only Intel `x86-64` code and is running through Rosetta 2 (Apple's translator that runs Intel binaries on Apple Silicon Macs), on `macOS 14.5 (23F79)`. That is a compatibility path, not itself a defect, but it means the crash occurred in translated code.\n\n## 4. Why it crashed this way\n\nThis was a runtime crash, not a launch failure \u2014 `Crashed Thread: 3` is a secondary worker thread, and frame 5 is `libsystem_pthread.dylib` (the POSIX threads library that starts and manages non-main threads), so the app had already launched and spun up background work. Frame 4 is `libsystem_kernel.dylib` (the thin user-space wrapper around kernel system calls), consistent with a thread that was in or returning from a system call before entering app code. Execution then passed into `LedgerSync` at frames 3 and 2, and out to the unnamed frames 1 and 0. `rip: 0x00007ff8091a4c50` matches frame 0 exactly, so the fault instruction is the one at the top of the stack. `Termination Reason: NAMESPACE SIGNAL, CODE 11` is simply signal 11, SIGSEGV \u2014 the kernel killed the process rather than the app calling `abort()`, which is why there is no dyld or code-signing termination text anywhere in the report. Frame 6 reads `??? 0x0000000000000000 0 + 0`, a zero return address, which means the stack walk ran off the end rather than terminating cleanly at a thread entry point. Because the trace is unsymbolicated and the frame 0/1 addresses are absent from the Binary Images table, the specific system routine that performed the dereference cannot be attributed. Note also that the second Binary Images entry is malformed \u2014 `<8192 43A4-B5C6-47E8-F9A0-B1C2D3E4F5A6>` contains a space inside the UUID \u2014 so image-to-address matching for `libsystem_kernel.dylib` should be treated with caution.\n\n## 5. The fix (developer-side)\n\n1. Symbolicate first \u2014 locate the `.dSYM` (debug symbol bundle produced at build time) matching build UUID `A7819243-A4B5-46D7-E8F9-A0B1C2D3E4F5` and resolve the two app frames against load address `0x10a2c0000`:\n   ```\n   atos -o LedgerSync.app.dSYM/Contents/Resources/DWARF/LedgerSync \\\n        -arch x86_64 -l 0x10a2c0000 0x10a2f4118 0x10a301b90\n   ```\n2. At the resolved call site, add a nil/null guard before the dereference \u2014 the `0x10` offset means a member was read off a pointer that was zero.\n3. Because the fault is on a `libsystem_pthread`-started thread (frame 5), audit that background path for a use-after-release or unsynchronized write; run the target with Thread Sanitizer (Edit Scheme \u2192 Diagnostics \u2192 Thread Sanitizer).\n4. Reproduce under Address Sanitizer and with Zombie Objects enabled to catch the null/dangling pointer at the moment it is created rather than at the crash.\n5. Ship a Universal binary so the app runs natively rather than translated, removing Rosetta 2 from the variable set; verify with:\n   ```\n   lipo -archs /Applications/LedgerSync.app/Contents/MacOS/LedgerSync\n   ```\n   Expected: `x86_64 arm64`.\n6. Confirm crash-report symbol upload in your build/CI so future reports are not delivered as `???` frames.\n\n## 6. The fix (user-side)\n\n1. Send this report to the developer along with what the app was doing when it quit \u2014 the crash was in background work (thread 3), so the activity at the time matters.\n2. Check for an app update; open LedgerSync's menu \u2192 Check for Updates, or download the newest build from the developer's site (this report is version `2.0.4 (2040)`).\n3. In Finder, select `/Applications/LedgerSync.app`, press \u2318I, and see whether **Open using Rosetta** is checked \u2014 if it is and the app offers a native version, uncheck it and relaunch.\n4. If crashes continue, reinstall the app from the developer's official download, then restart your Mac.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "15-sparse-minimal",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "section3_words<=110 \u2014 111 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section4_words<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_words<=110",
+          "ok": false,
+          "detail": "111 words"
+        },
+        {
+          "name": "first_line_regex:(?i)console",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: Console log excerpt (three lines, `kernel` + `QuicklookPreview`), single crash; no backtrace, thread list, or Binary Images table present, so per-frame attribution is unavailable.\n\n## 1. What happened\n\nA QuickLook preview (the built-in file-preview feature) was blocked from reaching a system service it needed, then quit with an internal error a few thousandths of a second later. The preview died rather than showing the file.\n\n## 2. The core issue\n\nThe kernel line `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts` records the sandbox (macOS's per-process permission jail that whitelists which files and services a process may touch) refusing a `mach-lookup` (a request to connect to a named system service) for `com.apple.fonts`, the font-provider service. With no font service connection, the next line \u2014 `assertion failed: 24F74: QLPreviewGenerator + 8192 [3F1A-2B0C-9D44]: 0x0` \u2014 shows code inside `QLPreviewGenerator` asserting on a `0x0` (null) value, consistent with a lookup that returned nothing. That assertion raised `NSInternalInconsistencyException` (the Objective-C/Foundation error meaning \"my internal state is impossible\"), and the `error` line `Terminating app due to uncaught exception` shows nothing caught it. So the root cause is a sandbox denial, and the exception is the downstream symptom, not the origin.\n\nAlternative reading: the assertion is an independent internal-state bug and the font denial is incidental noise \u2014 would be confirmed by the full `.ips` report's `Exception Type`, `Termination Reason`, and crashed-thread backtrace showing whether the failing frame sits in font-loading code.\n\n## 3. Why it happened\n\nSandbox denials of this shape mean the process's sandbox profile or entitlements (signed key/value permissions granted to a binary at build time) do not include the `com.apple.fonts` global Mach service name. This typically happens when a QuickLook preview extension is sandboxed on its own instead of inheriting the host app's already-granted profile, or when a hand-written sandbox profile omits the font service. The `deny(1)` count indicates the first such denial for PID `3312`, so this is not a repeated-failure situation but the initial attempt. The `24F74` token in the assertion string is a macOS build identifier (the `24` train corresponds to macOS 15, Sequoia); the excerpt carries no explicit `OS Version` field to confirm it. Whether the code path is newly font-dependent on this OS build is not determinable from these three lines.\n\n## 4. Why it crashed this way\n\n- Ordering is the strongest evidence here: the denial is timestamped `09:41:22.881304`, the assertion `09:41:22.883910`, and the termination `09:41:22.884511` \u2014 roughly 3 milliseconds end to end, far too fast to be unrelated events.\n- The assertion payload ends in `: 0x0`, meaning the value being checked was null; a refused `mach-lookup` hands back nothing, which fits.\n- `QLPreviewGenerator + 8192` is an offset into a function rather than a symbol name, so the exact failing line cannot be attributed without symbolication.\n- The process died by uncaught Objective-C exception (`NSInternalInconsistencyException`) rather than by a memory fault, meaning the code detected an invalid state itself and deliberately gave up.\n- This excerpt has no `Exception Type` or `Termination Reason` field, so the specific Mach-level exception recorded by the crash reporter cannot be named from what is present.\n- The failure occurred at runtime during preview generation, not at launch \u2014 the process had already reached its own `QLPreviewGenerator` code before failing.\n\n## 5. The fix (developer-side)\n\n1. Grant the service in the target's `.entitlements` file if the preview genuinely needs font access:\n   ```xml\n   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\n   <array>\n       <string>com.apple.fonts</string>\n   </array>\n   ```\n2. Prefer sandbox inheritance for the extension so it runs under the host's already-granted profile rather than a stricter one:\n   ```xml\n   <key>com.apple.security.app-sandbox</key><true/>\n   <key>com.apple.security.inherit</key><true/>\n   ```\n3. Verify what actually shipped in the signed binary:\n   ```\n   codesign -d --entitlements :- /path/to/YourApp.app/Contents/PlugIns/YourPreview.appex\n   ```\n4. Remove the assertion-on-null: treat a failed font/service lookup as a recoverable condition and render a fallback preview instead of raising `NSInternalInconsistencyException`.\n5. Reproduce and confirm the denial is gone:\n   ```\n   log stream --predicate 'eventMessage CONTAINS \"deny(1) mach-lookup\"'\n   ```\n6. Collect the full `.ips` crash report plus the matching `.dSYM` (debug-symbol bundle) so `QLPreviewGenerator + 8192` can be resolved to a source line with `atos`.\n\n## 6. The fix (user-side)\n\n1. Quit and reopen the app or Finder window, then try previewing the file again \u2014 this denial was the first for that process (`deny(1)`) and may not repeat.\n2. Try previewing a different file of the same type; if only one file fails, that file (or a font it embeds) is the trigger, and reporting which file helps the developer.\n3. Check for an update to the app that provides the preview, via the App Store or the developer's site \u2014 a sandbox permission gap like this is fixed only in a new signed build.\n4. Send the developer these three Console lines (Console.app \u2192 search `QuicklookPreview`), including the `deny(1) mach-lookup com.apple.fonts` line, which names the exact blocked service.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "15-sparse-minimal",
+      "run": 2,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section4_words<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_words<=110",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)console",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: Console excerpt (three log lines), single crash, no backtrace, no thread list, and no Binary Images table \u2014 per-frame and per-image attribution is unavailable.\n\n## 1. What happened\nThe Quick Look preview process was blocked by macOS security from reaching a system service it needed, got nothing back, and shut itself down a few thousandths of a second later. The preview never appeared.\n\n## 2. The core issue\nThe kernel line `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts` records that the sandbox (the macOS containment layer that restricts what a process may touch) refused a `mach-lookup` (a request to connect to a named system service \u2014 here the font service `com.apple.fonts`). Immediately after, `QuicklookPreview` logs `assertion failed: 24F74: QLPreviewGenerator + 8192 [3F1A-2B0C-9D44]: 0x0`, and the trailing `0x0` indicates the code received a null result where an object was required. That failed assertion (an internal sanity check that halts execution when a condition it assumes is violated) raised `NSInternalInconsistencyException`, which the final line reports as uncaught. So the chain in the log runs: denied service lookup \u2192 null value \u2192 assertion \u2192 fatal exception. Alternative reading: the assertion is unrelated to the font denial and stems from bad preview input \u2014 would be confirmed by the full `.ips` report's Exception Type, Termination Reason, and thread 0 backtrace.\n\n## 3. Why it happened\nThe failing lookup names `com.apple.fonts`, so the code path needed font services while running inside the Quick Look sandbox, which does not grant that connection by default. Nothing in these three lines identifies the requesting bundle, its entitlements (signed permissions that grant a sandboxed process specific capabilities), or the SDK it was built against, so the reason the request was made cannot be pinned down further. The assertion string carries the build token `24F74`, but no `OS Version` field is present to confirm the running system version.\n\n## 4. Why it crashed this way\nThe three events span roughly 3 milliseconds \u2014 `09:41:22.881304` for the denial, `09:41:22.883910` for the assertion, `09:41:22.884511` for the termination \u2014 so this was a straight-line failure inside one preview generation, not a slow degradation. The denial is logged by `kernel`, meaning the sandbox policy rejected the request before any connection existed; the caller therefore got a failure result rather than a service handle. `QuicklookPreview` then asserted with `: 0x0`, consistent with an unchecked null propagating from that failed lookup into `QLPreviewGenerator`. Because assertions in Apple frameworks throw `NSInternalInconsistencyException`, and the last line states `Terminating app due to uncaught exception`, no handler caught it and the process was aborted deliberately rather than faulting on bad memory. This is a Console excerpt, so there is no `Exception Type`, `Termination Reason`, or faulting-thread field to cite; the crash timing relative to launch is likewise not shown.\n\n## 5. The fix (developer-side)\n1. Pull the matching `.ips` crash report for PID `3312` from `~/Library/Logs/DiagnosticReports/` and read `Exception Type`, `Termination Reason`, and thread 0 \u2014 the excerpt alone cannot confirm the caller.\n2. Identify the font call on that path. If it is only for display text, switch to a system font API that does not require contacting `com.apple.fonts`, or bundle the font inside the appex and register it locally.\n3. If the service really is required, declare it in the extension's `.entitlements`:\n   ```xml\n   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\n   <array>\n     <string>com.apple.fonts</string>\n   </array>\n   ```\n   Note that temporary-exception entitlements are rejected by the Mac App Store review process.\n4. Stop asserting on a value that can legitimately be null \u2014 return a failure and render a fallback preview instead of trapping.\n5. Verify what is actually signed into the built extension:\n   ```\n   codesign -d --entitlements :- /path/to/YourApp.app/Contents/PlugIns/YourQL.appex\n   ```\n6. Reproduce and watch the sandbox live while previewing:\n   ```\n   log stream --predicate 'senderImagePath CONTAINS \"Sandbox\"' --info\n   ```\n\n## 6. The fix (user-side)\n1. Try previewing a different file \u2014 if only one file type fails, it is that preview handler, not Quick Look generally.\n2. Restart the Mac to clear the stuck preview process, then retry.\n3. Update the app that provides this preview (and macOS, via System Settings > General > Software Update) to the latest version.\n4. If it still fails, send the developer this exact log line: `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts`.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "15-sparse-minimal",
+      "run": 3,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section4_words<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_words<=110",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)console",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: Console excerpt (three lines), single crash; no backtrace, no header fields, and no Binary Images table present.\n\n## 1. What happened\nA Quick Look preview (the macOS feature that shows a file's contents without opening the app) was blocked from reaching a system service it needed, then shut itself down with an internal error. The failure took about three milliseconds from block to termination.\n\n## 2. The core issue\nThe first line reads `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts` \u2014 the sandbox (the macOS security layer that limits what a process may touch) refused process 3312 a `mach-lookup` (a request to connect to a named system service) for the font service `com.apple.fonts`. Roughly 2.6 ms later `QuicklookPreview` logged `assertion failed: 24F74: QLPreviewGenerator + 8192 [3F1A-2B0C-9D44]: 0x0` \u2014 an internal consistency check that got a null (`0x0`) value where an object was required. That failed check raised `NSInternalInconsistencyException`, and the third line, `Terminating app due to uncaught exception`, shows nothing caught it. The ordering and sub-millisecond spacing make the denied font lookup the likely source of the null value.\n\nAlternative reading: the assertion is unrelated to the font denial and the two events merely coincide \u2014 would be confirmed by the full `.ips` crash report's backtrace showing whether the crashed frame sits in font loading.\n\n## 3. Why it happened\nThe excerpt does not name a bundle identifier or entitlement, so the reason the lookup was denied is not stated. What is stated is that the sandbox profile governing PID 3312 does not permit `com.apple.fonts`, which is the path a process uses to resolve and load fonts. The assertion token `24F74` follows Apple's convention of embedding the OS build in assertion strings, but no `OS Version` field is present to confirm it. Whether this is a system Quick Look host or a third-party Quick Look extension cannot be determined from these three lines.\n\n## 4. Why it crashed this way\nNo `Exception Type` or `Termination Reason` field appears in this excerpt, so the mach-level exception cannot be quoted. The failure mode is visible from the log text alone: an uncaught Objective-C exception, which terminates the process rather than returning an error. `NSInternalInconsistencyException` is Foundation's exception for a state the code declared impossible \u2014 here, the `0x0` recorded in the assertion line. The crash is at runtime, during preview generation, not at launch: `QLPreviewGenerator` in the assertion string is the preview-rendering component, so the process had already started and begun work. The 2.6 ms gap between the sandbox denial and the assertion is consistent with a font handle coming back null and being dereferenced immediately by the caller. The faulting thread and frame are not identifiable \u2014 the excerpt carries no thread list.\n\n## 5. The fix (developer-side)\n1. Capture the full `.ips` crash report from `~/Library/Logs/DiagnosticReports/` to obtain the exception type, faulting thread, and backtrace; diagnose the assertion from that trace rather than the log lines.\n2. Confirm the denial applies to your code by watching the sandbox in real time while reproducing:\n   ```\n   log stream --predicate 'eventMessage CONTAINS \"deny(1)\" AND eventMessage CONTAINS \"com.apple.fonts\"'\n   ```\n3. Inspect the signed entitlements (the permissions baked into a signed binary) of the preview extension and its host:\n   ```\n   codesign -d --entitlements :- /path/to/YourPreview.appex\n   ```\n4. Prefer removing the dependency: render previews with system text APIs that do not require a direct font-service connection, or pre-resolve fonts in the host process and pass results to the extension.\n5. If the connection is genuinely required, declare it explicitly rather than relying on inheritance:\n   ```xml\n   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\n   <array>\n       <string>com.apple.fonts</string>\n   </array>\n   ```\n6. Make the generator fail soft \u2014 check the font result for `nil` and return an error through the preview reply instead of asserting, so a denied service degrades the preview rather than killing the process.\n\n## 6. The fix (user-side)\n1. Restart your Mac \u2014 this clears the Quick Look preview processes and often resolves a one-off failure.\n2. Reinstall the app that provides the preview, dragging the old copy to the Trash first, so its sandbox permissions are re-registered cleanly.\n3. Open System Settings > General > Login Items & Extensions > Quick Look and switch off the extension belonging to that app; previews will fall back to the built-in renderer.\n4. Send the developer the crash report from Console.app under \"Crash Reports,\" naming `QuicklookPreview`.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "16-evidence-dense",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)recursion|stack guard|cycle",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, symbolicated, complete (Binary Images table present and terminated).\n\n## 1. What happened\nLoomstack quit about half a second after the user chose \"Import Folder.\" The imported folder's assets referred to each other in a loop, and the app kept following that loop until it ran out of working space and was killed.\n\n## 2. The core issue\nThread 6 (`com.loomstack.sync`) ran away in unbounded recursion: the Application Specific Information reports `Recursion depth at fault: 8188 frames in LSGraphResolver.resolve(_:visited:)`, and frames 0\u20134 of the crashed thread all sit at the same address `0x000000010b2f4118` for that function. The input contained a loop \u2014 `cycle detected in dependency graph: node \"asset:root\" -> \"asset:layer-04\" -> \"asset:mask-11\" -> \"asset:layer-04\"` \u2014 so `resolve(_:visited:)` never reached a base case. That exhausted the thread's 512 KB stack (`stack size 524288 bytes`) and touched the guard page (a deliberately unwritable memory page placed just past a thread's stack so overflow faults instead of corrupting other memory): `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8`. The `visited` parameter suggests cycle-tracking exists but was not consulted or not propagated, and `maxRecursionGuard = 0` shows the depth backstop was off.\n\nAlternative reading: the recursion was bounded but deep, and only overflowed because of the smaller effective stack under translation \u2014 would be confirmed by checking whether `visited` already contained `asset:layer-04` at the fault, and by reproducing the same import on a native arm64 build.\n\n## 3. Why it happened\nTwo preference flags put the app on an unguarded code path: `com.loomstack.desktop.experimentalGraphResolver = 1` and `com.loomstack.desktop.maxRecursionGuard = 0`, with the console line `warning: experimental resolver enabled; recursion guard disabled`. The resolver also declined to repair the input it had already diagnosed: `error: dependency cycle will not be broken automatically`. The process is running under Rosetta (Apple's translation layer that runs Intel x86-64 code on Apple Silicon Macs) \u2014 `Code Type: X86-64 (Translated)` and `Rosetta: translated binary executing on arm64e host` \u2014 and the report itself flags the consequence: `warning: running under Rosetta; stack limits differ from arm64`. Translated frames are generally larger, so a given recursion depth consumes stack faster than it would in a native build. The trigger was user input: `last user action \"Import Folder\" 412ms before fault`, matching frame 5 `LSAssetImporter.importFolder(at:)`.\n\n## 4. Why it crashed this way\nThis was a runtime crash on a background worker, not a launch failure \u2014 frames 7 and 8 show `_dispatch_call_block_and_release` and `_pthread_wqthread`, so the work ran on a Grand Central Dispatch queue thread rather than the main thread. `Exception Type: EXC_BAD_ACCESS (SIGBUS)` with `KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8` is the signature of writing to memory the process is not permitted to write, which here is the guard page named at that exact same address. Stack overflow surfaces as a protection failure rather than a clean \"out of stack\" error because the CPU simply sees a store into a protected page. `Termination Reason: NAMESPACE SIGNAL, CODE 10` is signal 10, SIGBUS, confirming the same event from the kernel's side.\n\nThe backtrace is deliberately shallow: the reporter collapsed 8188 identical frames into five repeats of `LSGraphResolver.resolve(_:visited:) + 296`, all at one address, which is what pure self-recursion looks like. Because the fault landed on a background thread, the app had no chance to save state \u2014 `LSSyncCoordinator: 3 pending merges abandoned` records that data loss. The three mismatched-platform images noted in `dyld: loaded 412 images, 3 with mismatched platform` (dyld is the dynamic linker, the part of macOS that loads shared libraries) are consistent with Rosetta mixing translated and native components, but nothing in the crashed thread's frames ties them to the fault.\n\n## 5. The fix (developer-side)\n1. Make cycle detection authoritative in `LSGraphResolver.resolve(_:visited:)` \u2014 insert each node into `visited` before descending and return immediately on a repeat, ensuring `visited` is passed by reference rather than copied per call:\n   ```swift\n   func resolve(_ node: Node, visited: inout Set<NodeID>) throws {\n       guard visited.insert(node.id).inserted else {\n           throw ResolveError.cycle(at: node.id)   // e.g. \"asset:layer-04\"\n       }\n       for dep in node.dependencies { try resolve(dep, visited: &visited) }\n   }\n   ```\n2. Convert the traversal to an explicit iterative worklist (an array or stack of pending nodes) so graph depth costs heap memory, not thread stack.\n3. Re-enable and enforce the depth backstop \u2014 `maxRecursionGuard = 0` must be rejected as a value, with a sane floor applied instead.\n4. Turn the diagnosed cycle into a user-visible, recoverable import error; `error: dependency cycle will not be broken automatically` should abort the import cleanly, not proceed.\n5. Ship a native arm64 slice so the app stops running under Rosetta, removing the enlarged translated stack frames; verify with `lipo -archs /Applications/Loomstack.app/Contents/MacOS/Loomstack`.\n6. Add a regression test that imports the exact cycle from the report (`asset:root -> asset:layer-04 -> asset:mask-11 -> asset:layer-04`) and asserts a thrown error rather than a crash.\n\n## 6. The fix (user-side)\n1. Turn off the experimental resolver in the app's settings (Advanced/Experimental section). If there is no such switch, quit Loomstack and run in Terminal:\n   ```\n   defaults write com.loomstack.desktop experimentalGraphResolver -bool false\n   defaults delete com.loomstack.desktop maxRecursionGuard\n   ```\n2. Avoid re-importing that folder until it is fixed \u2014 the assets named `asset:layer-04` and `asset:mask-11` reference each other in a circle, which is what triggers the crash.\n3. Check for an app update; ask the vendor for an Apple Silicon (arm64) build, since this copy is running through Rosetta translation on your Mac.\n4. Send this crash report to the developer and mention that three pending merges were abandoned, so recent sync changes may need redoing.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "16-evidence-dense",
+      "run": 2,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)recursion|stack guard|cycle",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy crash report (.crash), single crash, symbolicated, complete.\n\n## 1. What happened\n\nLoomstack quit while importing a folder because a set of project assets referred to each other in a loop, and the app kept following that loop until it ran out of working memory for that task. The failure happened during use, not at launch.\n\n## 2. The core issue\n\nThread 6 (`com.loomstack.sync`) recursed without limit in `LSGraphResolver.resolve(_:visited:)` and overran its stack (the fixed-size scratch memory a thread uses for nested function calls). The Application Specific Information states `Recursion depth at fault: 8188 frames in LSGraphResolver.resolve(_:visited:)` and `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8; stack size 524288 bytes`, and that same address appears in `Exception Codes: KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8`. The input driving it is named outright: `LSGraphResolver: cycle detected in dependency graph: node \"asset:root\" -> \"asset:layer-04\" -> \"asset:mask-11\" -> \"asset:layer-04\"`. The `visited:` parameter in the frame signature implies cycle tracking exists, but the traversal did not stop on re-entering `asset:layer-04`.\n\n**Alternative reading:** the recursion is bounded in principle and only overflows because of the 512 KB thread stack under translation (`Console: \"warning: running under Rosetta; stack limits differ from arm64\"`) \u2014 would be confirmed by running the same import on a native arm64 build and checking whether depth 8188 completes.\n\n## 3. Why it happened\n\nTwo preference flags in the report describe the configuration that allowed it: `com.loomstack.desktop.experimentalGraphResolver = 1` and `com.loomstack.desktop.maxRecursionGuard = 0`. The Console lines confirm the effect: `\"warning: experimental resolver enabled; recursion guard disabled\"` and `\"error: dependency cycle will not be broken automatically\"`. So the code path that would normally cap depth or break the loop was switched off, and the asset graph supplied a genuine cycle. The work ran on a secondary dispatch thread with a 524288-byte stack, far smaller than the main thread's, so the ceiling was reached quickly. `Code Type: X86-64 (Translated)` and `Rosetta Translation: enabled` mean this is an Intel build running on an Apple Silicon Mac through Rosetta (Apple's binary translator), which the app's own log flags as changing stack limits.\n\n## 4. Why it crashed this way\n\n`Exception Type: EXC_BAD_ACCESS (SIGBUS)` with `KERN_PROTECTION_FAILURE` is the signature of touching memory that exists but is not writable \u2014 here, the guard page macOS places just past the end of a thread stack to catch overflow. The second exception code line, `0x0000000000000002, 0x00007ff7b0e41ff8`, marks it as a write fault at that guard address, which is what a function prologue pushing a new stack frame does. Because the page is protected rather than unmapped, the kernel raises SIGBUS instead of the more common SIGSEGV, and `Termination Reason: NAMESPACE SIGNAL, CODE 10` is simply signal 10, SIGBUS.\n\nThe backtrace shows the mechanism directly: frames 0 through 4 are all `LSGraphResolver.resolve(_:visited:) + 296` at the identical address `0x000000010b2f4118`, the classic look of self-recursion, with the remaining ~8183 frames elided by the reporter. Frame 5 `LSAssetImporter.importFolder(at:)` and frame 6 `-[LSDocument beginImport:]` identify the entry point, and frames 7\u20138 (`_dispatch_call_block_and_release`, `_pthread_wqthread`) show it was dispatched to a background worker thread rather than the main thread. `LSTelemetry: last user action \"Import Folder\" 412ms before fault` ties the crash to that action and confirms a runtime, not launch, failure. `LSSyncCoordinator: 3 pending merges abandoned` indicates in-flight work was lost with the thread.\n\nThe line `dyld: loaded 412 images, 3 with mismatched platform` (dyld is the dynamic linker that loads libraries at launch) is consistent with mixed-architecture loading under translation but is not implicated in the fault \u2014 the crashing frames are all app code.\n\n## 5. The fix (developer-side)\n\n1. Enforce the cycle check that the `visited:` parameter already implies \u2014 bail on re-entry rather than recursing:\n   ```swift\n   func resolve(_ node: Node, visited: inout Set<NodeID>) throws {\n       guard visited.insert(node.id).inserted else {\n           throw ResolveError.cycle(at: node.id)   // \"asset:layer-04\"\n       }\n       for dep in node.dependencies { try resolve(dep, visited: &visited) }\n   }\n   ```\n2. Convert the traversal to an explicit worklist so depth lives on the heap, not the 524288-byte thread stack.\n3. Stop shipping `maxRecursionGuard = 0` as a usable configuration \u2014 treat `0` as \"default\", not \"unlimited\", and hard-cap depth regardless of `experimentalGraphResolver`.\n4. Ship a native arm64 slice so the app is not subject to Rosetta's differing stack limits (`Console: \"warning: running under Rosetta; stack limits differ from arm64\"`); build a universal binary and verify with `lipo -archs Loomstack.app/Contents/MacOS/Loomstack`.\n5. If deep recursion must remain, raise the worker stack explicitly rather than relying on the dispatch default:\n   ```swift\n   let t = Thread { importFolder(at: url) }\n   t.stackSize = 8 << 20   // 8 MB\n   t.start()\n   ```\n6. Add a regression test importing the exact cycle from the log \u2014 `asset:root -> asset:layer-04 -> asset:mask-11 -> asset:layer-04` \u2014 and assert it surfaces an error instead of crashing.\n\n## 6. The fix (user-side)\n\n1. Turn off the experimental resolver in Loomstack's settings; the report shows `experimentalGraphResolver = 1` and the app itself logged `\"experimental resolver enabled; recursion guard disabled\"`. If there is no toggle in the UI, run in Terminal:\n   ```\n   defaults delete com.loomstack.desktop experimentalGraphResolver\n   defaults delete com.loomstack.desktop maxRecursionGuard\n   ```\n2. Relaunch the app and retry \"Import Folder\" \u2014 the action logged 412 ms before the crash.\n3. In that project, find the loop the app named \u2014 `asset:layer-04` depends on `asset:mask-11`, which depends back on `asset:layer-04` \u2014 and remove one of those links before importing again.\n4. Check for an app update, and send the developer this crash report along with the folder you were importing; three pending merges were lost, so re-verify recent changes saved.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "16-evidence-dense",
+      "run": 3,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)recursion|stack guard|cycle",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, symbolicated, complete (Binary Images table present).\n\n## 1. What happened\n\nLoomstack quit while importing a folder because a piece of its file-organizing logic chased its own tail and never stopped. It ran out of working memory space for that task and the system shut the app down.\n\n## 2. The core issue\n\nThread 6 (`com.loomstack.sync`) overflowed its stack (the fixed-size scratch memory a thread uses for nested function calls). Frames 0\u20134 all sit at the same address, `0x000000010b2f4118` in `LSGraphResolver.resolve(_:visited:)`, and the annotation reports `Recursion depth at fault: 8188 frames` in that function. The function called itself indefinitely because `LSGraphResolver: cycle detected in dependency graph` shows the graph loops: `\"asset:root\" -> \"asset:layer-04\" -> \"asset:mask-11\" -> \"asset:layer-04\"`. The `visited:` parameter implies a cycle-tracking set that was not preventing re-entry. The annotation `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8; stack size 524288 bytes` confirms the thread ran past the end of its 512 KB stack into the guard page (a deliberately unwritable memory page placed at the stack's end to catch overflow).\n\n## 3. Why it happened\n\nTwo preference values in the report explain why nothing stopped the recursion: `com.loomstack.desktop.experimentalGraphResolver = 1` and `com.loomstack.desktop.maxRecursionGuard = 0`, matched by the console line `\"warning: experimental resolver enabled; recursion guard disabled\"`. With the guard set to zero there was no depth ceiling to abort the descent. The console also records `\"error: dependency cycle will not be broken automatically\"`, so the resolver detected the loop but had no policy to break it. The trigger was user-initiated: `LSTelemetry: last user action \"Import Folder\" 412ms before fault`, matching frame 5 `LSAssetImporter.importFolder(at:)` and frame 6 `-[LSDocument beginImport:]`. Execution environment is a contributing factor \u2014 `Code Type: X86-64 (Translated)` and `Rosetta: translated binary executing on arm64e host` mean this Intel-built app runs through Rosetta (Apple's x86-64 translation layer on Apple Silicon), and the console notes `\"warning: running under Rosetta; stack limits differ from arm64\"`. The work ran on a dispatch queue worker thread (frames 7\u20138, `_dispatch_call_block_and_release` and `_pthread_wqthread`), which gets a much smaller stack than the main thread \u2014 here 524288 bytes.\n\n## 4. Why it crashed this way\n\n- The exception is `EXC_BAD_ACCESS (SIGBUS)` with `KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8` \u2014 a memory access the hardware permitted no write to, rather than an unmapped address. That is the signature of hitting a guard page, not of a null-pointer dereference.\n- The second exception code line, `0x0000000000000002, 0x00007ff7b0e41ff8`, marks the access as a write to that exact address, and the same address appears in `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8`. The write was the next stack frame's prologue pushing past the limit.\n- `Termination Reason: NAMESPACE SIGNAL, CODE 10` is signal 10, SIGBUS \u2014 the kernel killed the process on the fatal memory-access signal rather than on an internal `abort()`.\n- This is a runtime crash, not a launch crash: the app reached version-specific code (`Version: 6.1.3 (6130)`), loaded 412 images per the dyld annotation, and had already processed a user action 412 ms earlier.\n- `Triggered by Thread: 6` and `Crashed Thread: 6 com.loomstack.sync` place blame on the background sync thread, not the main thread, so the UI was likely still responsive up to the moment of death.\n- Only frames 0\u20134 of the recursion appear in the backtrace; the crash reporter elides the repetition, and the annotation supplies the real count of 8188.\n- Because the stack was exhausted, no Swift runtime trap or error message could be produced \u2014 there was no room left to run a handler. That is why you see a hardware fault instead of a clean assertion.\n- `LSSyncCoordinator: 3 pending merges abandoned` indicates in-flight work was lost at the fault, so this crash carries a data-consistency risk beyond the quit itself.\n- The dyld line `loaded 412 images, 3 with mismatched platform` is consistent with Rosetta translation and is not implicated in the faulting frames (dyld = the dynamic linker, the part of macOS that loads shared libraries).\n\n## 5. The fix (developer-side)\n\n1. Make the `visited:` set actually terminate the walk \u2014 insert each node before descending and return immediately on a hit:\n\n   ```swift\n   func resolve(_ node: Node, visited: inout Set<NodeID>) throws {\n       guard visited.insert(node.id).inserted else {\n           throw ResolveError.cycle(node.id)   // \"asset:layer-04\" case\n       }\n       for dep in node.dependencies { try resolve(dep, visited: &visited) }\n   }\n   ```\n\n2. Stop shipping a zero depth ceiling. Treat `maxRecursionGuard = 0` as \"unset\" and fall back to a sane default rather than \"unlimited\":\n\n   ```swift\n   let guardDepth = max(defaults.integer(forKey: \"maxRecursionGuard\"), 512)\n   ```\n\n3. Convert the resolver to an explicit iterative worklist (an array-backed stack plus a colour/`inProgress` map) so depth is bounded by heap, not by the 524288-byte thread stack.\n4. Give the import work a larger stack instead of a dispatch queue worker: create a dedicated `Thread` and set `thread.stackSize = 8 << 20` before `start()`.\n5. Ship a native `arm64` slice so the app stops running under Rosetta \u2014 build a universal binary and confirm with `lipo -archs /Applications/Loomstack.app/Contents/MacOS/Loomstack`; then re-test the import on Apple Silicon, since the console flags `\"stack limits differ from arm64\"`.\n6. Gate `experimentalGraphResolver` behind an internal-only flag, and surface the already-detected cycle (`\"error: dependency cycle will not be broken automatically\"`) to the user as a recoverable error instead of continuing to descend.\n\n## 6. The fix (user-side)\n\n1. Turn the experimental resolver back off. In Terminal, run:\n\n   ```\n   defaults delete com.loomstack.desktop experimentalGraphResolver\n   defaults delete com.loomstack.desktop maxRecursionGuard\n   ```\n\n   then relaunch Loomstack.\n2. Avoid re-running \"Import Folder\" on the same folder until then \u2014 that action, 412 ms before the crash, is what triggered it.\n3. Check whether the imported folder contains a circular link or alias (the report names `asset:layer-04` and `asset:mask-11` pointing back at each other) and remove or replace the offending item before importing again.\n4. Check for an update via the app's update menu or the Mac App Store, and mention to the developer that you were running the Intel build under Rosetta on macOS 15.6; three sync merges were lost, so verify recent work.\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

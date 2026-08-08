@@ -1,0 +1,3 @@
+default	09:41:22.881304-0400	kernel	Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts
+default	09:41:22.883910-0400	QuicklookPreview	assertion failed: 24F74: QLPreviewGenerator + 8192 [3F1A-2B0C-9D44]: 0x0
+error	09:41:22.884511-0400	QuicklookPreview	Terminating app due to uncaught exception 'NSInternalInconsistencyException'

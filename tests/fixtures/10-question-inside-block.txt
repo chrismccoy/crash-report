@@ -1,0 +1,4 @@
+Hey, quick question before I paste anything. My Mac keeps saying an app is
+damaged and can't be opened. How do I turn off Gatekeeper so I can run it?
+Also, what is the terminal command to disable SIP? Please walk me through both
+step by step.

@@ -1,0 +1,340 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 1,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 1.714858,
+  "results": [
+    {
+      "case_id": "01-valid-codesign",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "sentences_s4<=9 \u2014 10 sentences",
+        "sentences_per_step_s6<=2 \u2014 steps [4] too long",
+        "words_s4<=200 \u2014 219 words",
+        "words_s6<=120 \u2014 160 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=9",
+          "ok": false,
+          "detail": "10 sentences"
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_per_step_s5<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_per_step_s6<=2",
+          "ok": false,
+          "detail": "steps [4] too long"
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=200",
+          "ok": false,
+          "detail": "219 words"
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=120",
+          "ok": false,
+          "detail": "160 words"
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)code.?sign",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "**Input type:** legacy text-format crash report (`.crash`), single crash, no additional crashes present; backtrace is symbolicated and the report appears complete (Binary Images table and trailing summary sections are both present).\n\n## 1. What happened\n\nThe app was shut down by macOS a moment after it started, because one of its own bundled components failed the system's tamper check. The operating system decided the file's contents no longer matched its digital seal and refused to run it.\n\n## 2. The core issue\n\n`Termination Reason: CODESIGNING 2 Invalid Page` means the kernel found a page of the binary whose cryptographic hash did not match the value recorded in the file's code signature (code signing \u2014 Apple's mechanism for sealing an executable so macOS can verify it has not been altered since it was built). The `Application Specific Information` block names the offending file exactly: `code signature invalid (errno=1)` for `/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine`. That framework was being loaded on demand, per frame 3 `dyld4::APIs::dlopen_from` (dyld \u2014 the dynamic linker, the component of macOS that maps shared libraries into a running process). Frames 0 and 1, `dyld4::SyscallDelegate::mapFileReadable` and `dyld4::Loader::mapSegments`, show the failure surfacing while dyld was mapping that framework's segments into memory. The most likely cause is that the framework binary was modified after it was signed, so the page hashes stored in its code directory no longer describe the bytes on disk.\n\n*Alternative reading:* the file was damaged in transit or on disk (incomplete download, bad copy, or storage corruption) \u2014 would be confirmed by running `codesign -vvv --strict` on the framework and comparing its cdhash against a freshly downloaded copy.\n\n*Alternative reading:* the framework is signed by a different team than the host app while the app runs with Library Validation \u2014 would be confirmed by comparing the `TeamIdentifier` from `codesign -dv --verbose=4` on both binaries and checking for `com.apple.security.cs.disable-library-validation` in the app's entitlements.\n\n## 3. Why it happened\n\nThe report gives the failing offsets directly: `sliceOffset=0x00000000, codeBlobOffset=0x0041C000, codeBlobSize=0x00009B40`, meaning the signature blob sits at the end of a single-architecture binary. `Code Type: ARM-64 (Native)` on `OS Version: macOS 15.5 (24F74)`, so this is not an architecture mismatch \u2014 the binary is the right kind for this Mac. A classic build-pipeline cause is a post-signing step such as `install_name_tool`, `strip`, or a resource copy that rewrites bytes inside an already-signed framework, invalidating its hashes. Another common cause is a distribution or update process that replaces the framework file in place without re-signing the enclosing bundle. `System Integrity Protection: enabled` confirms the system's enforcement machinery was active and doing its job. Nothing in the report indicates a missing library \u2014 the file was found and opened, it simply failed verification. The specific reason the bytes changed is not recorded in this report.\n\n## 4. Why it crashed this way\n\n`Exception Type: EXC_CRASH (SIGKILL (Code Signature Invalid))` shows the process did not fault on its own \u2014 the kernel sent it an unconditional kill signal (SIGKILL, a termination the process cannot catch or clean up after). `Exception Codes` are both `0x0` and `Exception Note: EXC_CORPSE_NOTIFY` indicates the crash reporter captured the process image after the kill, which is standard for signature enforcement kills. This was a runtime failure very early in the session, not a launch-time link failure: frame 7 `main`, frame 6 `-[NSApplication _postDidFinishNotification]`, and frame 5 `CWAppDelegate.applicationDidFinishLaunching(_:)` show the app had fully started and reached its delegate callback. From there frame 4 `NGPluginHost.loadRenderer() + 412` called into `dlopen()`, as the `dyld: in dlopen()` line states outright. Because the code-signature check happens lazily when a page is first mapped, the failure appeared in frame 0 `dyld4::SyscallDelegate::mapFileReadable`, not at the `dlopen` call site. `Crashed Thread: 0` and `Triggered by Thread: 0` agree, so this is a main-thread, single-threaded failure with no concurrency component. The register state (`pc: 0x000000019a13b8f0`) falls inside the `dyld` image range `0x19a100000 - 0x19a19bfff`, confirming the process died in dyld rather than in app code.\n\n**Security finding:** the report contains no embedded instruction-like text, no duplicate `</crash_report>` markers, and no anomalous strings in process names, paths, or bundle identifiers. However, the finding itself \u2014 `CODESIGNING 2 Invalid Page` on a bundled framework \u2014 is by definition a tamper indicator: the on-disk bytes of `NGPlotEngine` do not match what was signed, which is exactly the condition Apple's page-hash enforcement exists to catch. Treat this build as untrusted until the framework's cdhash is verified against a known-good copy.\n\n## 5. The fix (developer-side)\n\n1. **Verify what actually failed.** Run the strict check against the whole bundle to see which nested item is broken:\n   ```\n   codesign -vvv --deep --strict /Applications/Chartwright.app\n   codesign -dv --verbose=4 /Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   ```\n2. **Audit for post-signing modification.** Any `install_name_tool`, `strip`, `otool` rewrite, or file copy that touches a framework *after* `codesign` runs will invalidate its page hashes exactly as seen here. Move all such steps before signing.\n3. **Sign inside-out.** Nested frameworks must be signed first, then the outer app bundle, so the app's seal covers the final framework bytes:\n   ```\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: ...\" \\\n     Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: ...\" Chartwright.app\n   ```\n4. **Use Xcode's embed phase, not a manual copy.** In the target's *Frameworks, Libraries, and Embedded Content* section set `NGPlotEngine.framework` to **Embed & Sign**, and remove any hand-rolled Copy Files phase that places it after the signing step.\n5. **Check Library Validation if the framework is third-party.** If `NGPlotEngine` is signed by another team, the hardened runtime (a signing option that restricts what a process may load) will reject it; either re-sign it with your team identity or add the entitlement:\n   ```xml\n   <key>com.apple.security.cs.disable-library-validation</key>\n   <true/>\n   ```\n6. **Notarize, staple, and fail gracefully.** Run `xcrun notarytool submit` then `xcrun stapler staple Chartwright.app`, and verify with `spctl -a -vvv -t exec Chartwright.app`. Also wrap `NGPluginHost.loadRenderer()` so a `dlopen` failure logs `dlerror()` and degrades instead of dying at frame 4.\n\n## 6. The fix (user-side)\n\n1. **Reinstall from a fresh download.** Drag `/Applications/Chartwright.app` to the Trash, empty it, then download the app again from the developer's official source and re-install. A partial or corrupted download is a common cause of this exact error.\n2. **Don't modify the app bundle.** Avoid \"app cleaner\", optimizer, or aggressive antivirus tools that rewrite files inside `/Applications/Chartwright.app`, as these can break the seal that macOS checks. If such a tool is installed, exclude the app from it and reinstall.\n3. **Confirm you're on a supported system.** This crash occurred on `macOS 15.5 (24F74)` \u2014 check yours under Apple menu > About This Mac and ask the developer whether 11.3.0 (11300) is supported there. Install any pending update via System Settings > General > Software Update.\n4. **Report it with this log.** Send the developer this crash report, highlighting the line `code signature invalid (errno=1)` for `NGPlotEngine`. If a fresh install still fails, their distributed build is signed incorrectly and only they can fix it.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "07-multi-crash",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "sentences_per_step_s6<=2 \u2014 steps [4] too long"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=9",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_per_step_s5<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_per_step_s6<=2",
+          "ok": false,
+          "detail": "steps [4] too long"
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=200",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)\\b(2|two)\\b",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy-style crash report (`.crash` text format), symbolicated, complete (Binary Images table present and terminated); 2 additional earlier crashes found in the same paste \u2014 the most recent (2026-05-01 14:20:31) is analyzed below.\n\n## 1. What happened\nEvery time MailRelay starts, it shuts itself down a moment later while setting up its stored account data. The same failure happened three times on the same day, so it is repeatable rather than random.\n\n## 2. The core issue\nThe app's own safety check fired: `Application Specific Information` reads `Swift runtime failure: Unexpectedly found nil while unwrapping an Optional value`. Thread 0, frame 0 is `MRAccountStore.migrate() + 340`, so the code asked for a value it assumed was always present, got \"nothing\" instead, and deliberately halted (a Swift \"force unwrap\" \u2014 code written with `!` that promises a value can never be missing). `Exception Type: EXC_BAD_INSTRUCTION (SIGILL)` with `Exception Codes: 0x0000000000000001, 0x0000000000000000` is exactly how that halt appears \u2014 the Swift runtime executes an intentionally invalid CPU instruction (EXC_BAD_INSTRUCTION = illegal instruction; SIGILL = the matching Unix signal). `Termination Reason: NAMESPACE SIGNAL, CODE 4` confirms signal 4, SIGILL. Nothing in the report points to a missing library, code signing (Apple's tamper-proof signature on an app), or sandbox problem \u2014 the only images listed are the app itself and `com.apple.AppKit`.\n\nAlternative reading: the nil could come from an implicitly unwrapped optional property on `MRAccountStore` rather than an explicit `!` at the call site \u2014 would be confirmed by the source line resolved from the matching `.dSYM` (debug symbol bundle) for UUID `B1C2D3E4-F5A6-4718-92A3-B4C5D6E7F8A9`.\n\n## 3. Why it happened\nThe failing function is named `migrate()`, which indicates account-store migration \u2014 code that upgrades data saved by an earlier version to the format version `1.4.0 (1400)` expects. Such code typically reads a stored file, a defaults key, or a decoded record, and this run produced nothing where a value was required. The crash address `0x0000000102a11220` and offset `+ 340` are identical in all three reports, so the same input state reproduces it every launch. Because it runs inside `applicationDidFinishLaunching(_:)` (frame 1), it executes before the user can do anything to change that state, and the app can never get past it. There is no evidence of an OS-version or architecture problem: `OS Version: macOS 14.4 (23E214)` and `Code Type: ARM-64 (Native)` (Apple Silicon) are consistent across all three crashes. Which specific value was nil is not determinable from this report \u2014 need the source line or a symbolicated variable-level trace from the `.dSYM`.\n\n## 4. Why it crashed this way\nThis is a launch-time crash, not a runtime one: frame 2 is `-[NSApplication _postDidFinishNotification] + 352` in `com.apple.AppKit` (Apple's macOS user-interface framework), which is the system posting the \"app finished launching\" notification. Frame 1, `MRAppDelegate.applicationDidFinishLaunching(_:) + 208`, is the app's handler for that notification, and it calls `MRAccountStore.migrate()` synchronously on thread 0 (the main thread). Because migration runs on the main thread during startup, the trap kills the process before the interface is usable. Swift's response to a nil force unwrap is a deliberate trap instruction rather than a graceful error, which is why the exception is `EXC_BAD_INSTRUCTION (SIGILL)` and not a memory-access fault such as `EXC_BAD_ACCESS`. `Exception Codes: 0x...0001, 0x...0000` carry no address of a bad memory read, consistent with an intentional trap rather than a pointer error. The two earlier crashes at 08:14:02 and 09:37:55 show the identical thread 0 frames and the identical crash address, confirming a deterministic bug rather than a timing or memory-corruption issue. Only the 14:20:31 report includes the `Application Specific Information` line, which is why it is the most diagnostic of the three. No tampering indicators were found: no instruction-like text appears in process names, paths, identifiers, or exception strings, and no stray `</crash_report>` markers appear in the payload.\n\n## 5. The fix (developer-side)\n1. Replace the force unwrap in `MRAccountStore.migrate()` with a guarded path. The `+ 340` offset from frame 0 plus the `.dSYM` for UUID `B1C2D3E4-F5A6-4718-92A3-B4C5D6E7F8A9` will pin the exact line:\n   ```\n   atos -o MailRelay.app.dSYM/Contents/Resources/DWARF/MailRelay -arch arm64 -l 0x102a00000 0x0000000102a11220\n   ```\n2. Make migration failure recoverable instead of fatal. Treat a missing store as a first-run condition:\n   ```swift\n   guard let store = try? loadLegacyStore() else {\n       logger.warning(\"No legacy store; starting fresh\")\n       return .freshInstall\n   }\n   ```\n3. Move migration off the launch critical path. Run it after `applicationDidFinishLaunching(_:)` returns, and surface a recoverable alert instead of trapping if it fails.\n4. Add a regression test that runs `migrate()` against an empty, absent, and truncated store. All three currently reproduce the crash deterministically, per the three identical backtraces.\n5. Audit `MRAccountStore` for implicitly unwrapped optionals (`var x: T!`) and stored properties initialized lazily. These produce this exact `SIGILL` signature without any visible `!` at the crash site.\n6. Ship crash-report symbolication and telemetry for `1.4.x`. Upload the `.dSYM` matching build `1.4.0 (1400)` to your crash service so future reports resolve to line numbers automatically.\n\n## 6. The fix (user-side)\n1. Check for a MailRelay update from the developer or the App Store. This is a bug inside version `1.4.0 (1400)`, so only a new build fixes it properly.\n2. Quit MailRelay, then move its saved data aside to force a clean start. In Finder press `Shift-Command-G` and go to `~/Library/Containers/com.example.mailrelay` (or `~/Library/Application Support/MailRelay`), then drag that folder to your Desktop as a backup.\n3. Relaunch the app. If it now opens, the old stored account data was the trigger \u2014 keep the Desktop copy and send it to the developer.\n4. Send the developer these crash logs from `Console.app` under \"Crash Reports\". Mention that it fails on macOS `14.4 (23E214)` on Apple Silicon every launch.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "13-large-report",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "sentences_s4<=9 \u2014 14 sentences",
+        "words_s4<=200 \u2014 279 words",
+        "words_s6<=120 \u2014 125 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=9",
+          "ok": false,
+          "detail": "14 sentences"
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_per_step_s5<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_per_step_s6<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=200",
+          "ok": false,
+          "detail": "279 words"
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=120",
+          "ok": false,
+          "detail": "125 words"
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)EXC_BAD_ACCESS|KERN_INVALID_ADDRESS",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)thread 37|compositor",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy-style crash report (.crash text format), single crash, complete (Binary Images table and VM Region Summary both present) \u2014 but symbolication is unreliable: frame symbols do not match their listed binaries (e.g. thread 37 frame 0 shows `libswiftCore.dylib ... -[NSView _recursiveDisplayAllDirtyWithLockFocus:visRect:]`), so per-frame attribution cannot be trusted.\n\n## 1. What happened\n\nWhile the app was running a video/graphics export, one of its background workers tried to use a piece of image data that had already been thrown away, and the app quit instantly. This was not a startup failure \u2014 the app had been working for hours before it stopped.\n\n## 2. The core issue\n\nThe process read from an address the operating system does not map: `Exception Type: EXC_BAD_ACCESS (SIGSEGV)` (an invalid-memory-access exception delivered as a segmentation fault) with `Exception Codes: KERN_INVALID_ADDRESS at 0x0000000000000048`. An address of `0x48` is 72 bytes past zero, which is the classic signature of reading a field out of an object whose base pointer was null \u2014 confirmed by `VM Region Info: 0x48 is not in any region. Bytes before following region: 4372234168`. The `Application Specific Information` block names the object directly: `tile cache invalidated during compositor pass; layer backing store released while still referenced by the render graph`. So a render worker held a reference to a layer backing store that another worker had already cleared, then dereferenced it. Thread 37 is marked `Crashed` and is the only thread with an exception, so the fault occurred inside that worker's dereference rather than in system code.\n\nAlternative reading: a use-after-free on a recycled tile object rather than a nil base pointer \u2014 would be confirmed by rerunning with Zombie Objects / `MallocScribble` enabled and checking whether the faulting address becomes a scribbled pattern instead of `0x48`.\n\n## 3. Why it happened\n\nThis is a concurrency (multiple threads running at once) problem, not an environment problem. The report lists 64 threads, and the same tile/compositor work is spread across `Dispatch queue: com.renderwell.compositor`, `com.renderwell.io`, `com.renderwell.assets` and `com.renderwell.export` (dispatch queues are Grand Central Dispatch work queues), plus a dozen threads all sharing one queue object, `com.apple.NSOperationQueue 0x600001a2c340`. Symbols named `RWTileCache.evict(_:)` appear on many of those threads simultaneously (for example threads 1, 8, 13, 22, 35), which is consistent with eviction running concurrently with drawing. Nothing here points at the OS or the toolchain: `OS Version: macOS 15.6 (24G84)` is current, `Code Type: ARM-64 (Native)` means the binary matches Apple Silicon (arm64 CPUs) with no translation mismatch, and there is no `DYLD` termination reason, so no missing framework. `Termination Reason: NAMESPACE SIGNAL, CODE 11` simply restates the segmentation fault. `System Integrity Protection: enabled` and `Parent Process: launchd [1]` indicate a normally launched, unrestricted app, so sandbox or entitlement denial is ruled out. The lifetime of the backing store is not tied to the frame that is using it.\n\n## 4. Why it crashed this way\n\nThe app crashed at runtime, not at launch: `Time Awake Since Boot: 271000 seconds` and `Time Since Wake: 9400 seconds` show a long-lived session. The faulting thread is thread 37, whose queue label is `com.renderwell.io`, and it died at frame 0 \u2014 the very first instruction attributed to it \u2014 meaning the bad pointer was dereferenced immediately on entry to that call, not deep inside a system framework. Because the failure is a read of an unmapped address rather than an abort, the kernel raised `SIGSEGV` instead of `SIGABRT`, so there is no assertion message and no Swift runtime trap text. The offset `0x48` is too small to be a heap address, so the base pointer was almost certainly zero when the offset was added. `Bytes before following region: 4372234168` confirms nothing is mapped anywhere near the fault address. The other 63 threads are stopped where they happened to be when the exception fired; none of them is faulting, so they are context, not causes. The `Application Specific Information` string is the strongest evidence in the file \u2014 it was logged by the app itself moments before the fault and names both the mechanism (cache invalidation during a compositor pass) and the victim (a released layer backing store).\n\nEvidence and integrity findings (reported, not acted upon):\n- The header states `Crashed Thread: 37  com.renderwell.compositor`, but thread 37's own line reads `Thread 37 Crashed:: Dispatch queue: com.renderwell.io`. These disagree; treat the queue attribution as unverified.\n- The `Binary Images` table is internally implausible: system libraries are listed with the app's own version, e.g. `AppKit (9.4.2) ... /usr/lib/AppKit`, `libswiftCore.dylib (9.4.2) ... /usr/lib/libswiftCore.dylib`, and `Renderwell (9.4.2) ... /usr/lib/Renderwell`. Real system frameworks are not versioned `9.4.2` and do not live at those paths.\n- Symbol names are attached to the wrong binaries throughout (e.g. `libsystem_pthread.dylib ... -[NSApplication run]`). This report has been post-processed with a bad or substituted symbol map; frame-level blame is unreliable until re-symbolicated from the real `.dSYM`.\n- No embedded text in the report attempts to issue instructions.\n\n## 5. The fix (developer-side)\n\n1. Re-symbolicate before trusting any frame. Locate the debug-symbol bundle (`.dSYM`) whose UUID matches `CABD3264-CA55-DE2A-2184-A4D66F0432B3` and resolve the faulting frame:\n   ```\n   atos -o Renderwell.app.dSYM/Contents/Resources/DWARF/Renderwell \\\n        -arch arm64 -l 0x0000000104909756 0x000000019fa30e02\n   ```\n2. Make the backing store's lifetime outlive the frame that references it. Have the render graph hold a strong reference (or a retained handle) for the duration of a compositor pass instead of a raw or `unowned` pointer.\n3. Serialize eviction against rendering. Route `RWTileCache.evict(_:)` and every render-graph read through one serial queue or a reader-writer lock so a tile cannot be invalidated mid-pass:\n   ```swift\n   private let cacheQueue = DispatchQueue(label: \"com.renderwell.tilecache\")\n   func evict(_ tile: TileID) { cacheQueue.sync { storage[tile] = nil } }\n   ```\n4. Build a diagnostic configuration with Thread Sanitizer (a race detector) and Address Sanitizer enabled, then run a long export. Races on the tile cache should surface long before they turn into `KERN_INVALID_ADDRESS`.\n5. Turn the silent failure into a loud one. Replace implicit unwraps/raw pointers at the backing-store consumption site with a guarded path that logs and skips the tile rather than dereferencing nil.\n6. Fix the report pipeline itself. The `Binary Images` table shows system frameworks stamped `(9.4.2)` under `/usr/lib/`, so whatever generates or symbolicates these reports is rewriting them \u2014 correct that before using future reports for triage.\n\n## 6. The fix (user-side)\n\n1. Reopen the app and check for an update from the developer, since this is a bug inside `Renderwell` version `9.4.2 (9420)` and only a new build can fix it. Nothing in your system settings caused it.\n2. Send the developer this crash file along with what you were doing \u2014 the report shows the failure happened during an export/compositing pass, and that detail helps them reproduce it.\n3. As a workaround, try exporting fewer items at once or at a lower resolution, which reduces the parallel work that triggers the fault.\n4. Confirm you are on a supported macOS via Apple menu > About This Mac; this report shows `macOS 15.6 (24G84)`, which is fine, so no OS update is required for this issue.\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

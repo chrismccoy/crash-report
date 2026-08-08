@@ -1,0 +1,60 @@
+Process:               Chartwright [30918]
+Path:                  /Applications/Chartwright.app/Contents/MacOS/Chartwright
+Identifier:            com.northgate.chartwright
+Version:               11.3.0 (11300)
+Code Type:             ARM-64 (Native)
+Parent Process:        launchd [1]
+User ID:               501
+
+Date/Time:             2026-07-30 13:47:06.5521 -0700
+OS Version:            macOS 15.5 (24F74)
+Report Version:        12
+Anonymous UUID:        2B8E44D1-63C9-41F7-9A05-D1E7C3B60F24
+
+Time Awake Since Boot: 9400 seconds
+
+System Integrity Protection: enabled
+
+Crashed Thread:        0
+
+Exception Type:        EXC_CRASH (SIGKILL (Code Signature Invalid))
+Exception Codes:       0x0000000000000000, 0x0000000000000000
+Exception Note:        EXC_CORPSE_NOTIFY
+Termination Reason:    CODESIGNING 2 Invalid Page
+
+Triggered by Thread:   0
+
+Application Specific Information:
+dyld: in dlopen()
+/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine:
+code signature invalid (errno=1) sliceOffset=0x00000000, codeBlobOffset=0x0041C000,
+codeBlobSize=0x00009B40 for
+'/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine'
+
+Thread 0 Crashed:
+0   dyld                          0x000000019a13b8f0 invocation function for block in dyld4::SyscallDelegate::mapFileReadable + 244
+1   dyld                          0x000000019a10c2ac dyld4::Loader::mapSegments + 1180
+2   dyld                          0x000000019a1174d8 dyld4::JustInTimeLoader::makeLaunchLoader + 128
+3   dyld                          0x000000019a1220b0 dyld4::APIs::dlopen_from + 984
+4   Chartwright                   0x0000000104e33a4c NGPluginHost.loadRenderer() + 412
+5   Chartwright                   0x0000000104e2f118 CWAppDelegate.applicationDidFinishLaunching(_:) + 296
+6   AppKit                        0x000000019c83c410 -[NSApplication _postDidFinishNotification] + 352
+7   Chartwright                   0x0000000104e20e30 main + 88
+8   dyld                          0x000000019a1069c4 start + 6076
+
+Thread 0 crashed with ARM Thread State (64-bit):
+    x0: 0x0000000000000001   x1: 0x000000016d3f1a20   x2: 0x0000000000000000
+     pc: 0x000000019a13b8f0  sp: 0x000000016d3f1970  lr: 0x000000019a10c2ac
+
+Binary Images:
+0x104e00000 - 0x1051abfff  com.northgate.chartwright (11.3.0) <2B8E44D1-63C9-41F7-9A05-D1E7C3B60F24> /Applications/Chartwright.app/Contents/MacOS/Chartwright
+0x19a100000 - 0x19a19bfff  dyld (1385.4) <7C1A9F02-B4D6-4E88-91A3-0F5E2D8C71B6> /usr/lib/dyld
+0x19c800000 - 0x19d74bfff  com.apple.AppKit (6.9) <5E9B21C7-8A40-4D13-B6F2-C08D4A91E357> /System/Library/Frameworks/AppKit.framework/Versions/C/AppKit
+
+External Modification Summary:
+  Calls made by other processes targeting this process: 0
+  Calls made by this process: 0
+
+VM Region Summary:
+ReadOnly portion of Libraries: Total=488.1M resident=0K(0%)
+Writable regions: Total=142.7M written=0K(0%)

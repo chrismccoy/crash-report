@@ -1,0 +1,209 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 2,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 0.43543200000000004,
+  "results": [
+    {
+      "case_id": "18-modern-ips-json",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=60",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)\\.?ips",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)unrecognized selector|NSInvalidArgumentException",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)TWSyncEngine|TWSyncKit",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: crash report (.ips), single crash, symbolicated backtrace, report complete.\n\n## 1. What happened\n\nTidewater 4.8.0 shut itself down about six seconds after opening, before its window was usable. It asked one of its own internal components to do something that component does not know how to do, and the app stopped itself rather than continue.\n\n## 2. The core issue\n\nThe app sent the message `reconcileWithSnapshot:` to a `TWSyncEngine` object that has no such method. The `asi` field records the exact failure: `*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '-[TWSyncEngine reconcileWithSnapshot:]: unrecognized selector sent to instance 0x600003a1e480'`. In Objective-C a *selector* (the name of a method, resolved at runtime rather than at compile time) that no class implements triggers the runtime's forwarding path \u2014 visible at thread 0, frames 4 and 5, `__exceptionPreprocess` and `___forwarding___` in `CoreFoundation`. Nothing caught the exception, so `abort()` ran (`libsystem_c.dylib`: `\"abort() called\"`, frames 2\u20133). The most likely cause is a version skew between the app binary and its embedded framework: the main binary is `4.8.0`/`4800`, while `/Applications/Tidewater.app/Contents/Frameworks/TWSyncKit.framework` in `usedImages` is `2.1.0`/`210`, and the newer caller expects a method the older sync code does not export.\n\nAlternative reading: `TWSyncEngine` is compiled into *both* the main binary (frame 6 is attributed to `imageIndex 0`, the app itself) and `TWSyncKit`, and the Objective-C runtime bound the copy lacking the method \u2014 would be confirmed by an `objc: Class TWSyncEngine is implemented in both ...` warning in Console at launch, or by `nm -gU` showing `_OBJC_CLASS_$_TWSyncEngine` in both images.\n\n## 3. Why it happened\n\nThis is not an OS, architecture, or signing problem. `osVersion` is `macOS 15.4 (24E248)` on a `MacBookPro18,3`, `cpuType` is `ARM-64`, and every image in `usedImages` is `arm64`/`arm64e` \u2014 no mismatch. `sip` is `enabled` and `codeSigningTeamID` is `9K2LM4PQ7R`, with the app loading normally from `/Applications/Tidewater.app`, so Gatekeeper (macOS's launch-time signature check) and the sandbox did not block anything. The failure is purely internal: an API contract inside the app's own code was broken. The version numbers in `usedImages` \u2014 app `4800`, `TWSyncKit` `210` \u2014 point to a stale framework shipped alongside newer app code, which is the classic result of a build phase copying a cached or previously built framework instead of the current one.\n\n## 4. Why it crashed this way\n\n`exception.type` is `EXC_CRASH` with `signal: SIGABRT` and `termination.indicator` is `Abort trap: 6` \u2014 meaning the process deliberately terminated itself, not that it touched bad memory. That self-termination is the standard consequence of an uncaught Objective-C exception. The crash is a launch-time crash, not a runtime one: frame 7 of thread 0 is `-[TWAppDelegate applicationDidFinishLaunching:]`, the method macOS calls once startup completes, and `procLaunch` (`11:25:58.3104`) to `procExitAbsTime` spans roughly six seconds. The faulting thread is 0, queue `com.apple.main-thread`, per `faultingThread` and `legacyInfo`. The call chain reads cleanly downward: app delegate \u2192 `-[TWSyncEngine reconcileWithSnapshot:]` (frame 6, `imageIndex 0`) \u2192 `___forwarding___` \u2192 `__exceptionPreprocess` \u2192 `abort_message` \u2192 `abort` \u2192 `pthread_kill` \u2192 `__pthread_kill`. `exception.codes` are both `0x0` because a signal-based abort carries no fault address. The second thread, `com.harborline.tidewater.sync`, is parked in `_pthread_cond_wait` and is not implicated. Because the failure occurs during delegate startup, every launch will reproduce it deterministically.\n\n## 5. The fix (developer-side)\n\n1. Reproduce in Xcode with a symbolic breakpoint on `-[NSObject doesNotRecognizeSelector:]` and on `objc_exception_throw` to catch the moment the selector is sent.\n2. Confirm which image owns the class and whether it is duplicated:\n   ```\n   nm -gU /Applications/Tidewater.app/Contents/MacOS/Tidewater | grep TWSyncEngine\n   nm -gU /Applications/Tidewater.app/Contents/Frameworks/TWSyncKit.framework/Versions/A/TWSyncKit | grep TWSyncEngine\n   ```\n   If `_OBJC_CLASS_$_TWSyncEngine` appears in both, remove `TWSyncEngine.m` from the app target's Compile Sources so only `TWSyncKit` defines it.\n3. If it is a version skew instead, align the embedded framework: clean `DerivedData`, rebuild `TWSyncKit` from the same revision as the app, and verify the copied bundle reports `CFBundleVersion 4800`-era numbering rather than `210`.\n4. Add a compile-time guarantee that the method exists \u2014 declare `reconcileWithSnapshot:` in the framework's public header and build with `-Werror=objc-method-access` so a missing declaration fails the build instead of the launch.\n5. Make startup non-fatal for this path while you investigate:\n   ```objc\n   if ([self.syncEngine respondsToSelector:@selector(reconcileWithSnapshot:)]) {\n       [self.syncEngine reconcileWithSnapshot:snapshot];\n   } else {\n       NSLog(@\"TWSyncKit too old for reconcileWithSnapshot:\");\n   }\n   ```\n6. Add a CI step that diffs the app's and embedded frameworks' `CFBundleVersion` values before archiving, so mismatched pairs never ship.\n\n## 6. The fix (user-side)\n\n1. Quit Tidewater, then delete `/Applications/Tidewater.app` and reinstall it \u2014 the report shows an App Store install (`storeInfo.itemID 1477320981`), so redownload it from the App Store's Purchased list.\n2. Check the App Store's Updates tab for a version newer than `4.8.0`; this crash happens on every launch and needs a developer fix.\n3. Report it to Harborline with the incident ID `3B6F0E22-91AC-4D57-8E10-C5A2D74B9F03` and mention it crashes immediately at launch on macOS 15.4.\n4. Nothing in System Settings, Privacy & Security, or your macOS version will change the outcome \u2014 `sip` is `enabled` and the app launched fine; the failure is inside the app's own code.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "18-modern-ips-json",
+      "run": 2,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=60",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)\\.?ips",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)unrecognized selector|NSInvalidArgumentException",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)TWSyncEngine|TWSyncKit",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: crash report (.ips), single crash, symbolicated backtrace, report complete.\n\n## 1. What happened\nThe app Tidewater quit a few seconds after being opened, during its own start-up routine. It asked one of its internal components to perform an action that component doesn't actually know how to do, so the app shut itself down.\n\n## 2. The core issue\nThe app sent the message `reconcileWithSnapshot:` to a `TWSyncEngine` object that has no such method. The `asi` field records CoreFoundation's message: `*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '-[TWSyncEngine reconcileWithSnapshot:]: unrecognized selector sent to instance 0x600003a1e480'`. In Objective-C, method calls (selectors \u2014 the name of a method, resolved at run time rather than at compile time) are looked up while the app runs, so a missing method surfaces only on execution. Thread 0 frame 5 `___forwarding___` is the runtime's last-chance lookup path, which failed and raised the exception. Notably, frame 6 `-[TWSyncEngine reconcileWithSnapshot:]` resolves inside `imageIndex 0` \u2014 the main binary at `/Applications/Tidewater.app/Contents/MacOS/Tidewater` \u2014 while a separate `TWSyncKit.framework` (`com.harborline.tidewater.synckit`, version `2.1.0`/`210`) is also loaded, pointing to two copies of the same class and the wrong one winning. Alternative reading: no duplicate, just a stale embedded `TWSyncKit` 2.1.0 that predates the method \u2014 would be confirmed by checking whether `TWSyncEngine` is defined in both binaries via `nm -gU` on each.\n\n## 3. Why it happened\nThe app binary carries `CFBundleVersion 4800` (version `4.8.0`), while the embedded framework `TWSyncKit` is at `2.1.0`/`210` \u2014 a large version skew between the caller and the component that owns the sync engine. Objective-C resolves method calls at run time, so calling a method that the shipped framework build does not implement produces no compile-time or link-time error; it only fails when the line executes. When the same class name exists in two loaded images (the main binary and `TWSyncKit.framework` both appear in `usedImages`), the runtime binds to whichever loaded first and silently discards the other implementation. Nothing here points to code signing, sandboxing, or OS gating: `sip` is `enabled`, `os_version` is `macOS 15.4 (24E248)`, and all images are `arm64`/`arm64e` on a `MacBookPro18,3` \u2014 no architecture mismatch.\n\n## 4. Why it crashed this way\nThis is a runtime crash during launch, not a loader failure \u2014 the app's own code ran first. `procLaunch` is `2026-07-19 11:25:58.3104` and `captureTime` is `11:26:04.7712`, so the process lived about six seconds. Frame 7 on thread 0 is `-[TWAppDelegate applicationDidFinishLaunching:]`, the method macOS calls once the app has finished starting, so the failing work was start-up work. From there frame 6 entered `reconcileWithSnapshot:`, and the lookup failed. Frames 5 and 4 (`___forwarding___`, `__exceptionPreprocess`) are the Objective-C runtime raising `NSInvalidArgumentException` with no handler to catch it. Frames 3 through 0 (`abort_message`, `abort`, `pthread_kill`, `__pthread_kill`) are the standard self-termination path: an uncaught Objective-C exception ends in `abort()`, confirmed by the `asi` entry `libsystem_c.dylib: [\"abort() called\"]`. That is why the exception type is `EXC_CRASH` with signal `SIGABRT` (the app killed itself deliberately) rather than a memory fault, and why `termination` reads `SIGNAL`, code `6`, `Abort trap: 6`. The `codes` are `0x0, 0x0` \u2014 there is no faulting address, because nothing dereferenced bad memory. `faultingThread` is `0`, queue `com.apple.main-thread`, so this ran on the app's primary thread. The only other thread, `com.harborline.tidewater.sync` (id `1840294`), sits idle in `_pthread_cond_wait` and is not implicated.\n\n## 5. The fix (developer-side)\n1. Confirm the duplicate: run `nm -gU` against both binaries and see whether `TWSyncEngine` is defined in each.\n   ```\n   nm -gU /Applications/Tidewater.app/Contents/MacOS/Tidewater | grep TWSyncEngine\n   nm -gU /Applications/Tidewater.app/Contents/Frameworks/TWSyncKit.framework/Versions/A/TWSyncKit | grep TWSyncEngine\n   ```\n2. If both define it, remove `TWSyncEngine.m` from the app target's Compile Sources and let it live only in `TWSyncKit`; a duplicate also logs `objc: Class TWSyncEngine is implemented in both ...` to Console at launch.\n3. If only the framework defines it, rebuild and re-embed a `TWSyncKit` that actually contains `reconcileWithSnapshot:` \u2014 the shipped copy is `2.1.0`/`210` against an app at `4.8.0`/`4800`. Check the Embed Frameworks build phase is pulling the current build product, not a cached artifact.\n4. Clean the stale copy out: delete DerivedData and any prebuilt `TWSyncKit.framework` checked into the repo, then rebuild.\n5. Make the start-up path fail soft instead of aborting:\n   ```objc\n   if ([engine respondsToSelector:@selector(reconcileWithSnapshot:)]) {\n       [engine reconcileWithSnapshot:snapshot];\n   } else {\n       NSLog(@\"TWSyncKit too old: %@\", TWSyncKitVersionString);\n   }\n   ```\n6. Add a launch-time assertion or CI check that the embedded `TWSyncKit` `CFBundleVersion` matches the version the app was built against.\n\n## 6. The fix (user-side)\n1. Quit Tidewater, delete it from `/Applications`, and reinstall a fresh copy \u2014 a partially updated install is the most likely cause on your side.\n2. Check the App Store for a Tidewater update (the report shows a store item ID, `1477320981`), and install any newer version.\n3. If the reinstalled app still quits on launch, report it to Harborline with the incident ID `3B6F0E22-91AC-4D57-8E10-C5A2D74B9F03` and note that it crashes during start-up.\n4. No macOS update is needed \u2014 this Mac runs `macOS 15.4 (24E248)`, and the crash is inside the app itself, not the system.\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

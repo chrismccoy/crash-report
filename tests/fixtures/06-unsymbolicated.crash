@@ -1,0 +1,35 @@
+Process:               LedgerSync [21884]
+Path:                  /Applications/LedgerSync.app/Contents/MacOS/LedgerSync
+Identifier:            com.example.ledgersync
+Version:               2.0.4 (2040)
+Code Type:             X86-64 (Translated)
+Parent Process:        launchd [1]
+
+Date/Time:             2026-06-02 16:41:09.7712 -0700
+OS Version:            macOS 14.5 (23F79)
+Report Version:        12
+
+Crashed Thread:        3
+
+Exception Type:        EXC_BAD_ACCESS (SIGSEGV)
+Exception Codes:       KERN_INVALID_ADDRESS at 0x0000000000000010
+Exception Codes:       0x0000000000000001, 0x0000000000000010
+Termination Reason:    NAMESPACE SIGNAL, CODE 11
+
+Thread 3 Crashed:
+0   ???                           0x00007ff8091a4c50 0 + 140703207295056
+1   ???                           0x00007ff8091b1a34 0 + 140703207349812
+2   LedgerSync                    0x000000010a2f4118 0x10a2c0000 + 213272
+3   LedgerSync                    0x000000010a301b90 0x10a2c0000 + 269200
+4   libsystem_kernel.dylib        0x00007ff809f22b08 0x7ff809f10000 + 76552
+5   libsystem_pthread.dylib       0x00007ff809f6183c 0x7ff809f5c000 + 22588
+6   ???                           0x0000000000000000 0 + 0
+
+Thread 3 crashed with X86 Thread State (64-bit):
+   rax: 0x0000000000000000  rbx: 0x00007f9a4b80a200  rcx: 0x0000000000000010
+   rip: 0x00007ff8091a4c50  rsp: 0x00007000098f2a10  rbp: 0x00007000098f2a90
+
+Binary Images:
+0x10a2c0000 - 0x10a44bfff  com.example.ledgersync (2.0.4) <A7819243-A4B5-46D7-E8F9-A0B1C2D3E4F5> /Applications/LedgerSync.app/Contents/MacOS/LedgerSync
+0x7ff809f10000 - 0x7ff809f47fff  libsystem_kernel.dylib (10063.121.3) <8192 43A4-B5C6-47E8-F9A0-B1C2D3E4F5A6> /usr/lib/system/libsystem_kernel.dylib
+0x7ff809f5c000 - 0x7ff809f68fff  libsystem_pthread.dylib (10063.121.3) <9243A4B5-C6D7-48F9-A0B1-C2D3E4F5A6B7> /usr/lib/system/libsystem_pthread.dylib

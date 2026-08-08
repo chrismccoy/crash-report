@@ -1,0 +1,146 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 1,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 0.330551,
+  "results": [
+    {
+      "case_id": "01-valid-codesign",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s1_sentences",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s4<=200",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s6<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)crash",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)code.?sign",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy-format crash report (`.crash` text), single crash, symbolicated, complete (Binary Images table and VM Region Summary both present).\n\n## 1. What happened\n\nThe app quit immediately at startup because one of the add-on components stored inside it was rejected by macOS as untrustworthy. The system refused to load the file and killed the app on the spot.\n\n## 2. The core issue\n\nThe dynamic linker (dyld \u2014 the part of macOS that loads code at runtime) called `dlopen()` (a request to load a library on demand, thread 0, frame 3) for the app's bundled component and the kernel refused it. `Termination Reason: CODESIGNING 2 Invalid Page` means a memory page of that file failed its cryptographic hash check as it was paged in, so the process was killed with `SIGKILL` (an unblockable kill signal). The file is named in Application Specific Information:\n\n```\n/Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework/Versions/A/NGPlotEngine:\ncode signature invalid (errno=1) sliceOffset=0x00000000, codeBlobOffset=0x0041C000, codeBlobSize=0x00009B40\n```\n\nThe binary on disk no longer matches its own signature.\n\n**Alternative reading:** the signature is intact but the load is blocked by library validation (a hardened-runtime rule that only lets a process load code signed by the same team) \u2014 would be confirmed by `codesign -dv --entitlements - /Applications/Chartwright.app` showing the hardened runtime flag with no library-validation exception.\n\n**Alternative reading:** a truncated or corrupted copy of the framework \u2014 would be confirmed by comparing the on-disk file size against `codeBlobOffset` + `codeBlobSize` from the quoted string.\n\n## 3. Why it happened\n\nThe failing file sits inside the app bundle (`Contents/Frameworks/`), not in `/System`, so this is the app's own payload. A signature mismatch on an embedded framework normally means the binary was altered *after* it was signed \u2014 post-build stripping, `install_name_tool` rewriting, copying by an installer or updater that rewrote bytes, resource injection, or a damaged/partial download or disk fault.\n\n`Code Type: ARM-64 (Native)` matters: on Apple Silicon every executable page must carry a valid signature, so there is no \"unsigned but runs anyway\" path. `System Integrity Protection: enabled` confirms the enforcing configuration was active. The report gives no signing-authority or notarization fields, so which of those alteration paths applied is not stated here.\n\n## 4. Why it crashed this way\n\n- **Runtime, not pre-main:** frame 5 is `CWAppDelegate.applicationDidFinishLaunching(_:)`, called from `-[NSApplication _postDidFinishNotification]` (frame 6, AppKit). The app's own code ran, then frame 4 `NGPluginHost.loadRenderer()` explicitly requested the plug-in.\n- **The failing mechanism:** frames 3 \u2192 2 \u2192 1 \u2192 0 walk `dlopen_from` \u2192 `makeLaunchLoader` \u2192 `mapSegments` \u2192 `mapFileReadable`. The crash lands while *mapping the file into memory*, before any of the framework's code executes.\n- **Why unhandled:** `Exception Type: EXC_CRASH (SIGKILL (Code Signature Invalid))` \u2014 the kernel killed the process. A `dlopen()` failure that returns `NULL` would be recoverable; a code-signing page fault is not, because validation happens in the kernel's page-in path. `EXC_CORPSE_NOTIFY` simply means a corpse was handed to the crash reporter.\n- **Anchoring register:** `pc: 0x19a13b8f0` matches frame 0 inside the `dyld` image range (`0x19a100000 - 0x19a19bfff`), confirming the fault was in dyld, not app code.\n\n**Security review:** no instruction-like text, role-change text, or extra `</crash_report>` strings appear anywhere in this report. Nothing was treated as a directive.\n\n## 5. The fix (developer-side)\n\n1. **Reproduce the verdict locally:**\n   ```\n   codesign --verify --deep --strict --verbose=4 /Applications/Chartwright.app\n   codesign -dvvv /Applications/Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   spctl -a -vvv -t exec /Applications/Chartwright.app\n   ```\n2. **Fix signing order.** Every nested framework must be signed *before* the outer app, and nothing may touch the binary afterward. Move all `strip`, `install_name_tool`, `dsymutil`, and file-copy steps *ahead* of signing.\n3. **Re-sign nested code explicitly** in a build phase or CI script:\n   ```\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: Northgate (TEAMID)\" \\\n     Chartwright.app/Contents/Frameworks/NGPlotEngine.framework\n   codesign --force --options runtime --timestamp \\\n     --sign \"Developer ID Application: Northgate (TEAMID)\" Chartwright.app\n   ```\n4. **Check bundle layout.** A versioned framework needs valid `Versions/A` + `Current` symlinks; a flattened or rewritten copy invalidates the seal.\n5. **If the plug-in is third-party or JIT-generated**, add the entitlement that permits loading it (only if genuinely required):\n   ```xml\n   <key>com.apple.security.cs.disable-library-validation</key>\n   <true/>\n   ```\n   (entitlement \u2014 a signed permission granting an app a specific capability.)\n6. **Notarize and staple** the finished bundle, then re-verify with `spctl` (notarization \u2014 Apple's automated malware scan; stapling attaches the resulting ticket to the app).\n7. **Harden the updater/installer.** If an auto-update writes into `Contents/Frameworks/`, replace the whole `.app` atomically rather than patching files in place.\n8. **Fail gracefully:** check `dlopen()`'s return value and surface an error \u2014 though note that in this specific failure the kernel kills the process before `dlopen()` can return.\n\n## 6. The fix (user-side)\n\n1. **Delete and reinstall.** Drag `Chartwright.app` to the Trash, empty it, then download a fresh copy from the vendor \u2014 a corrupted or partially written file is the most common cause.\n2. **Verify the download** by re-downloading over a different network if the reinstall fails the same way.\n3. **Check for tampering:** if you or an IT tool modified anything inside `/Applications/Chartwright.app`, or if third-party plug-ins were dropped into its `Frameworks` folder, remove them and reinstall.\n4. **Update macOS** via System Settings > General > Software Update (you are on 15.5).\n5. **Report it** to Northgate support, quoting `CODESIGNING 2 Invalid Page` and `NGPlotEngine`. Do not disable macOS security protections.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "09-truncated-after-exception",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "first_line_regex:(?i)incomplete|truncated|cut off|abbreviated|partial \u2014 input-type line was 'Input type: legacy crash report (`.crash`), single crash, symbolicated (frame 2 carries a Swift symbol name).'"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s1_sentences",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s4<=200",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s6<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)incomplete|truncated|cut off|abbreviated|partial",
+          "ok": false,
+          "detail": "input-type line was 'Input type: legacy crash report (`.crash`), single crash, symbolicated (frame 2 carries a Swift symbol name).'"
+        },
+        {
+          "name": "contains:SANDBOX",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy crash report (`.crash`), single crash, symbolicated (frame 2 carries a Swift symbol name).\n\n## 1. What happened\n\nVectorDraw was shut down by macOS while saving a PDF export, because the system blocked the app from creating that file in the user's Documents folder. The app did not finish writing `plate-04.pdf`.\n\n## 2. The core issue\n\nThe App Sandbox (macOS's per-app permission jail that limits which files an app may touch) refused a file creation. `Termination Reason` reads verbatim:\n\n```\nSANDBOX deny(1) file-write-create /Users/alex/Documents/exports/plate-04.pdf\n```\n\nThe same denial repeats under `Application Specific Information`. The app tried to create a file at an absolute path outside its sandbox container, without a permission grant covering that location.\n\n**Alternative reading:** a guarded file-descriptor violation \u2014 `Exception Codes` reads `GUARD_TYPE_FD` (a kernel guard that kills a process for misusing a protected file handle, e.g. closing a descriptor it does not own). Would be confirmed by the full `EXC_GUARD` code words and the guarded descriptor number, neither of which appears here.\n\n## 3. Why it happened\n\nA sandboxed app may freely write only inside its own container and to paths the user explicitly granted. The denied path \u2014 `/Users/alex/Documents/exports/plate-04.pdf` \u2014 is a plain absolute path in the user's Documents folder, which is neither.\n\nConsistent with the report, one of these holds:\n\n- The app lacks the entitlement (a signed capability flag baked into the binary at build time) `com.apple.security.files.user-selected.read-write`, so even a save-panel choice would not grant write access.\n- The user picked the folder once, but the app stored a raw path instead of a security-scoped bookmark (a token that preserves a user's file grant across launches), so the grant did not survive.\n- Export code built the destination path itself rather than receiving it from `NSSavePanel`, bypassing Powerbox (the macOS broker that hands sandboxed apps access to user-chosen files) entirely.\n\nThe report contains no entitlements listing, so which of the three applies is not determinable from this report.\n\n## 4. Why it crashed this way\n\nThis was a runtime failure, not a launch failure: the crashed thread is thread 2, named `com.example.vectordraw.export`, and frame 2 sits in the app's own `VDExportSession.writePDF(to:)` \u2014 the app was executing its export code, well past startup.\n\n`Exception Type: EXC_GUARD (SIGKILL)` means the kernel terminated the process outright rather than delivering a catchable error; `SIGKILL` cannot be trapped, so no error handler in `writePDF(to:)` ever ran and no partial file cleanup occurred. `System Integrity Protection: enabled` is noted but is not the blocking layer here \u2014 the sandbox is.\n\nTwo internal inconsistencies worth flagging as evidence, not conclusions:\n\n- Frames 0 and 1 are `__pthread_kill` and `pthread_kill`, the *self-signalling* path typical of `SIGABRT`. A kernel-issued sandbox `SIGKILL` would not leave those frames on the stack.\n- `Exception Codes: GUARD_TYPE_FD` describes a descriptor guard, while `Termination Reason` describes a sandbox path denial. These are different kill mechanisms.\n\nTogether these suggest a merged, edited, or misattributed report. No instruction-like or command text appears in the block; no tampering finding beyond this.\n\n## 5. The fix (developer-side)\n\n1. **Never construct the destination path.** Obtain it from the user through `NSSavePanel`, which routes the grant through Powerbox:\n\n   ```swift\n   let panel = NSSavePanel()\n   panel.nameFieldStringValue = \"plate-04.pdf\"\n   panel.allowedContentTypes = [.pdf]\n   guard panel.runModal() == .OK, let url = panel.url else { return }\n   try exportSession.writePDF(to: url)\n   ```\n\n2. **Add the entitlement** in `YourApp.entitlements`:\n\n   ```xml\n   <key>com.apple.security.app-sandbox</key>\n   <true/>\n   <key>com.apple.security.files.user-selected.read-write</key>\n   <true/>\n   ```\n\n3. **Persist grants as security-scoped bookmarks**, not paths, if the export folder is reused across launches:\n\n   ```swift\n   let data = try url.bookmarkData(options: .withSecurityScope,\n                                   includingResourceValuesForKeys: nil,\n                                   relativeTo: nil)\n   // later:\n   var stale = false\n   let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope,\n                     relativeTo: nil, bookmarkDataIsStale: &stale)\n   guard url.startAccessingSecurityScopedResource() else { return }\n   defer { url.stopAccessingSecurityScopedResource() }\n   ```\n\n   This requires `com.apple.security.files.bookmarks.app-scope` in the entitlements file.\n\n4. **Verify what actually shipped** in the signed binary:\n\n   ```\n   codesign -d --entitlements :- /Applications/VectorDraw.app\n   ```\n\n5. **Reproduce and confirm the denial** while testing, then re-run after the fix:\n\n   ```\n   log stream --predicate 'sender == \"Sandbox\"' --info\n   ```\n\n6. **Resolve the report inconsistency** noted in section 4. `GUARD_TYPE_FD` alongside `pthread_kill` frames points at descriptor handling in `VDExportSession`. Audit that class for double-`close()` or writing to a descriptor after `stopAccessingSecurityScopedResource()`, and confirm the crash reproduces with a clean, single `.ips` capture.\n\n## 6. The fix (user-side)\n\n1. Retry the export and, when the save dialog appears, **choose the folder yourself** rather than accepting a remembered location \u2014 a folder you pick in the dialog is normally permitted.\n2. Try saving to your **Desktop** or **Downloads** folder as a test.\n3. Open **System Settings > Privacy & Security > Files and Folders**, find VectorDraw, and enable access to **Documents**.\n4. Check for an app update \u2014 this is a bug in VectorDraw 7.0.2 (7020), not in your Mac.\n5. If it still fails, send this report to the developer, noting that the export was headed to `/Users/alex/Documents/exports/`.\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

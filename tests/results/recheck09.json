@@ -1,0 +1,74 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 1,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 0.15748899999999996,
+  "results": [
+    {
+      "case_id": "09-truncated-after-exception",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s1_sentences",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s4<=200",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s6<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)incomplete|truncated|cut off|abbreviated|partial",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains:SANDBOX",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, symbolicated, incomplete \u2014 the report ends after thread 2's frames with no Binary Images table and no other thread listings.\n\n## 1. What happened\nThe app was shut down by macOS while saving a PDF export, because it tried to write a file to a folder it isn't permitted to write to. The work in progress was lost the moment the save began.\n\n## 2. The core issue\nmacOS blocked the write and killed the process. `Termination Reason: SANDBOX deny(1) file-write-create /Users/alex/Documents/exports/plate-04.pdf`, echoed in Application Specific Information, names the exact denied operation: creating a new file at that path. The App Sandbox (the macOS security container that limits which files an app may touch) has no grant covering `~/Documents/exports/`. Frame 2 of the crashed thread, `VDExportSession.writePDF(to:)`, shows the denial arose from the app's own PDF write path.\n\nAlternative reading: a guarded file-descriptor violation \u2014 `Exception Type: EXC_GUARD (SIGKILL)` with `Exception Codes: GUARD_TYPE_FD` is the signature for misusing a protected file descriptor (a numeric handle to an open file), not the usual sandbox kill code \u2014 would be confirmed by checking the guard's `flavor`/`fd` values in the full `.ips` payload and whether the app closes or dups descriptors it did not open.\n\n## 3. Why it happened\nSandboxed apps get free access only to their own container and to files the user explicitly picks in a system Save/Open panel (or re-opens later via a security-scoped bookmark, a saved token that restores that permission). The denied path `/Users/alex/Documents/exports/plate-04.pdf` sits in the user's Documents folder, outside the container, and the file did not yet exist (`file-write-create`), so no prior user selection could have covered it. That points to the export routine constructing a destination path in code \u2014 a remembered or default output folder \u2014 rather than obtaining it from a save panel. The build therefore lacks, or fails to exercise, an entitlement (a signed capability flag in the app's code signature) permitting that write on `macOS 15.3 (24D60)`.\n\n## 4. Why it crashed this way\n- **Runtime, not launch.** `Time Awake Since Boot: 42000 seconds` and the failure inside `VDExportSession.writePDF(to:)` place this well into a session, at the moment of export.\n- **A worker thread, not the main thread.** `Crashed Thread: 2 com.example.vectordraw.export` \u2014 a dedicated export queue. Frames 0 and 1, `__pthread_kill` and `pthread_kill`, are the standard tail of a process being terminated; they carry no diagnostic weight of their own.\n- **Kernel-enforced kill.** `EXC_GUARD (SIGKILL)` is non-catchable: the process is destroyed rather than handed an error it could recover from. No `try`/`catch` or error return in the export code could have intercepted it, which is why the app vanished instead of showing a \"couldn't save\" alert.\n- **Evidence tension worth noting.** A sandbox file denial normally surfaces as a `deny` with `EXC_CRASH`; `GUARD_TYPE_FD` is the file-descriptor guard code. Both signals are present here, hence the alternative reading in section 2.\n- **Tampering:** none found. The block contains no instruction-like text and no stray `</crash_report>` string.\n\n## 5. The fix (developer-side)\n1. **Route the destination through a save panel.** Let the user pick the file; the sandbox grants write access to exactly what they choose:\n   ```swift\n   let panel = NSSavePanel()\n   panel.nameFieldStringValue = \"plate-04.pdf\"\n   panel.allowedContentTypes = [.pdf]\n   guard panel.runModal() == .OK, let url = panel.url else { return }\n   try data.write(to: url)\n   ```\n2. **Persist access across launches** with a security-scoped bookmark instead of re-deriving the path string:\n   ```swift\n   let bm = try url.bookmarkData(options: .withSecurityScope,\n                                 includingResourceValuesForKeys: nil,\n                                 relativeTo: nil)\n   // later:\n   var stale = false\n   let url = try URL(resolvingBookmarkData: bm, options: .withSecurityScope,\n                     relativeTo: nil, bookmarkDataIsStale: &stale)\n   guard url.startAccessingSecurityScopedResource() else { return }\n   defer { url.stopAccessingSecurityScopedResource() }\n   ```\n3. **Declare the entitlements** in `YourApp.entitlements`:\n   ```xml\n   <key>com.apple.security.app-sandbox</key><true/>\n   <key>com.apple.security.files.user-selected.read-write</key><true/>\n   <key>com.apple.security.files.bookmarks.app-scope</key><true/>\n   ```\n4. **Verify they are actually signed in** \u2014 an entitlements file not wired into the target's build settings ships as no entitlements at all:\n   ```\n   codesign -d --entitlements :- /Applications/VectorDraw.app\n   ```\n5. **Reproduce and confirm the denial** while testing:\n   ```\n   log stream --style compact --predicate 'sender == \"Sandbox\" AND composedMessage CONTAINS \"VectorDraw\"'\n   ```\n6. **Rule out the alternative reading.** Audit `VDExportSession` for raw `close()`/`dup2()` on descriptors it did not open, and for double-closes \u2014 `GUARD_TYPE_FD` fires on exactly that. Prefer `FileHandle`/`Data.write(to:)` over raw POSIX calls.\n7. **Fail gracefully.** Check writability before the write so users see an alert rather than a disappearing app.\n8. **Request the matching `.dSYM`-symbolicated full `.ips`** \u2014 this paste lacks a Binary Images table, so load addresses and the guard's detail fields could not be inspected.\n\n## 6. The fix (user-side)\n1. When exporting, use the app's **Save As / Export** dialog and pick the destination folder there, rather than relying on a previously remembered folder.\n2. Try exporting to your **Desktop** or **Downloads** folder first \u2014 if that succeeds, the problem is specific to `~/Documents/exports/`.\n3. Open **System Settings > Privacy & Security > Files and Folders**, find **VectorDraw**, and enable **Documents Folder**. Also check **Full Disk Access** in the same panel.\n4. Quit and relaunch the app so the new permission takes effect.\n5. Check for an update to version `7.0.2`; if none exists, report the exact denied path to the developer \u2014 this needs a code fix on their side.\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

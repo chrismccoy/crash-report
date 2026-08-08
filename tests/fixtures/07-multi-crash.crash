@@ -1,0 +1,77 @@
+Process:               MailRelay [10022]
+Path:                  /Applications/MailRelay.app/Contents/MacOS/MailRelay
+Identifier:            com.example.mailrelay
+Version:               1.4.0 (1400)
+Code Type:             ARM-64 (Native)
+
+Date/Time:             2026-05-01 08:14:02.1000 -0400
+OS Version:            macOS 14.4 (23E214)
+Report Version:        12
+
+Crashed Thread:        0
+
+Exception Type:        EXC_BAD_INSTRUCTION (SIGILL)
+Exception Codes:       0x0000000000000001, 0x0000000000000000
+Termination Reason:    NAMESPACE SIGNAL, CODE 4
+
+Thread 0 Crashed:
+0   MailRelay                     0x0000000102a11220 MRAccountStore.migrate() + 340
+1   MailRelay                     0x0000000102a0f118 MRAppDelegate.applicationDidFinishLaunching(_:) + 208
+
+Binary Images:
+0x102a00000 - 0x102b4bfff  com.example.mailrelay (1.4.0) <B1C2D3E4-F5A6-4718-92A3-B4C5D6E7F8A9> /Applications/MailRelay.app/Contents/MacOS/MailRelay
+
+=====================================================================
+
+Process:               MailRelay [10310]
+Path:                  /Applications/MailRelay.app/Contents/MacOS/MailRelay
+Identifier:            com.example.mailrelay
+Version:               1.4.0 (1400)
+Code Type:             ARM-64 (Native)
+
+Date/Time:             2026-05-01 09:37:55.6200 -0400
+OS Version:            macOS 14.4 (23E214)
+Report Version:        12
+
+Crashed Thread:        0
+
+Exception Type:        EXC_BAD_INSTRUCTION (SIGILL)
+Exception Codes:       0x0000000000000001, 0x0000000000000000
+Termination Reason:    NAMESPACE SIGNAL, CODE 4
+
+Thread 0 Crashed:
+0   MailRelay                     0x0000000102a11220 MRAccountStore.migrate() + 340
+1   MailRelay                     0x0000000102a0f118 MRAppDelegate.applicationDidFinishLaunching(_:) + 208
+
+Binary Images:
+0x102a00000 - 0x102b4bfff  com.example.mailrelay (1.4.0) <B1C2D3E4-F5A6-4718-92A3-B4C5D6E7F8A9> /Applications/MailRelay.app/Contents/MacOS/MailRelay
+
+=====================================================================
+
+Process:               MailRelay [11504]
+Path:                  /Applications/MailRelay.app/Contents/MacOS/MailRelay
+Identifier:            com.example.mailrelay
+Version:               1.4.0 (1400)
+Code Type:             ARM-64 (Native)
+
+Date/Time:             2026-05-01 14:20:31.0090 -0400
+OS Version:            macOS 14.4 (23E214)
+Report Version:        12
+
+Crashed Thread:        0
+
+Exception Type:        EXC_BAD_INSTRUCTION (SIGILL)
+Exception Codes:       0x0000000000000001, 0x0000000000000000
+Termination Reason:    NAMESPACE SIGNAL, CODE 4
+
+Application Specific Information:
+Swift runtime failure: Unexpectedly found nil while unwrapping an Optional value
+
+Thread 0 Crashed:
+0   MailRelay                     0x0000000102a11220 MRAccountStore.migrate() + 340
+1   MailRelay                     0x0000000102a0f118 MRAppDelegate.applicationDidFinishLaunching(_:) + 208
+2   AppKit                        0x0000000191a3c410 -[NSApplication _postDidFinishNotification] + 352
+
+Binary Images:
+0x102a00000 - 0x102b4bfff  com.example.mailrelay (1.4.0) <B1C2D3E4-F5A6-4718-92A3-B4C5D6E7F8A9> /Applications/MailRelay.app/Contents/MacOS/MailRelay
+0x191a00000 - 0x192f4bfff  com.apple.AppKit (6.9) <C2D3E4F5-A6B7-4829-A3B4-C5D6E7F8A9B0> /System/Library/Frameworks/AppKit.framework/Versions/C/AppKit

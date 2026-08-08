@@ -1,0 +1,52 @@
+Process:               Loomstack [14992]
+Path:                  /Applications/Loomstack.app/Contents/MacOS/Loomstack
+Identifier:            com.loomstack.desktop
+Version:               6.1.3 (6130)
+Code Type:             X86-64 (Translated)
+Parent Process:        launchd [1]
+User ID:               502
+
+Date/Time:             2026-08-04 17:52:09.4471 -0400
+OS Version:            macOS 15.6 (24G84)
+Report Version:        12
+Rosetta Translation:   enabled
+
+Crashed Thread:        6  com.loomstack.sync
+
+Exception Type:        EXC_BAD_ACCESS (SIGBUS)
+Exception Codes:       KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8
+Exception Codes:       0x0000000000000002, 0x00007ff7b0e41ff8
+Termination Reason:    NAMESPACE SIGNAL, CODE 10
+Triggered by Thread:   6
+
+Application Specific Information:
+CrashReporter Annotations: {"cpu_type":"x86_64","translated":true}
+Rosetta: translated binary executing on arm64e host
+dyld: loaded 412 images, 3 with mismatched platform
+Thread 6 stack guard page hit at 0x00007ff7b0e41ff8; stack size 524288 bytes
+Recursion depth at fault: 8188 frames in LSGraphResolver.resolve(_:visited:)
+LSGraphResolver: cycle detected in dependency graph: node "asset:root" ->
+  "asset:layer-04" -> "asset:mask-11" -> "asset:layer-04"
+LSSyncCoordinator: 3 pending merges abandoned
+LSTelemetry: last user action "Import Folder" 412ms before fault
+Preferences: com.loomstack.desktop.experimentalGraphResolver = 1
+Preferences: com.loomstack.desktop.maxRecursionGuard = 0
+Console: "warning: experimental resolver enabled; recursion guard disabled"
+Console: "warning: running under Rosetta; stack limits differ from arm64"
+Console: "error: dependency cycle will not be broken automatically"
+
+Thread 6 Crashed:: com.loomstack.sync
+0   Loomstack                     0x000000010b2f4118 LSGraphResolver.resolve(_:visited:) + 296
+1   Loomstack                     0x000000010b2f4118 LSGraphResolver.resolve(_:visited:) + 296
+2   Loomstack                     0x000000010b2f4118 LSGraphResolver.resolve(_:visited:) + 296
+3   Loomstack                     0x000000010b2f4118 LSGraphResolver.resolve(_:visited:) + 296
+4   Loomstack                     0x000000010b2f4118 LSGraphResolver.resolve(_:visited:) + 296
+5   Loomstack                     0x000000010b301b90 LSAssetImporter.importFolder(at:) + 1184
+6   Loomstack                     0x000000010b30a220 -[LSDocument beginImport:] + 448
+7   libdispatch.dylib             0x00007ff809620a18 _dispatch_call_block_and_release + 12
+8   libsystem_pthread.dylib       0x00007ff809f6183c _pthread_wqthread + 326
+
+Binary Images:
+0x10b2c0000 - 0x10b74bfff  com.loomstack.desktop (6.1.3) <9E4C1A77-2B30-4D18-A6F5-C0B39D712E48> /Applications/Loomstack.app/Contents/MacOS/Loomstack
+0x7ff809600000 - 0x7ff80965ffff  libdispatch.dylib (1503.1.2) <1A77-9E4C-4D18-2B30-C0B39D712E48> /usr/lib/system/libdispatch.dylib
+0x7ff809f5c000 - 0x7ff809f68fff  libsystem_pthread.dylib (11215.1.10) <4D18-1A77-9E4C-2B30-C0B39D712E48> /usr/lib/system/libsystem_pthread.dylib

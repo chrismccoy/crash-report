@@ -1,0 +1,252 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 1,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 0.549979,
+  "results": [
+    {
+      "case_id": "02-empty",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected stop_ask, got stop_ask"
+        },
+        {
+          "name": "no_h2_headers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_nonblank_lines<=4",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "The crash report block is empty \u2014 could you paste the full `.crash`, `.ips`, or Console excerpt, including the Exception Type and Termination Reason lines?\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "03-placeholder-only",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected stop_ask, got stop_ask"
+        },
+        {
+          "name": "no_h2_headers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_nonblank_lines<=4",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "The report block still contains the unfilled placeholder `[PASTE LOG HERE]` \u2014 could you paste the actual crash report text (.ips, .crash, or Console excerpt), including the Exception Type / Termination Reason block?\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "04-wrong-format",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "branch \u2014 expected wrong_format, got stop_ask",
+        "contains_wrong_format_reply \u2014 exact reply string absent"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": false,
+          "detail": "expected wrong_format, got stop_ask"
+        },
+        {
+          "name": "no_h2_headers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains_wrong_format_reply",
+          "ok": false,
+          "detail": "exact reply string absent"
+        },
+        {
+          "name": "not_contains_out_of_scope_reply",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_nonblank_lines<=2",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "The report block contains only the unfilled template placeholder \u2014 could you paste the actual Apple log (a `.crash`, `.ips`, hang/spindump, or Console excerpt) including its header fields and the Exception Type / Termination Reason block?\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "08-truncated-before-exception",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected stop_ask, got stop_ask"
+        },
+        {
+          "name": "no_h2_headers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "max_nonblank_lines<=4",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "I can see the header fields, but the report stops at `Crashed Thread: 2` \u2014 can you paste the rest, including the Exception Type / Termination Reason block and the thread backtraces?\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "09-truncated-after-exception",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "first_line_regex:(?i)incomplete|truncated|cut off|abbreviated|partial \u2014 input-type line was 'Input type: legacy `.crash`-style text crash report, symbolicated, single crash (no additional crashes present in the paste).'"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s1_sentences",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s3<=150",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s4<=200",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "ceiling_s6<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)incomplete|truncated|cut off|abbreviated|partial",
+          "ok": false,
+          "detail": "input-type line was 'Input type: legacy `.crash`-style text crash report, symbolicated, single crash (no additional crashes present in the paste).'"
+        },
+        {
+          "name": "contains:SANDBOX",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash`-style text crash report, symbolicated, single crash (no additional crashes present in the paste).\n\n## 1. What happened\nThe app was shut down by the system while saving a PDF export, because it tried to create a file in a folder it had not been given permission to write to. The work in that export was lost.\n\n## 2. The core issue\nThe app's own security container blocked the write. `Termination Reason: SANDBOX deny(1) file-write-create /Users/alex/Documents/exports/plate-04.pdf` and the matching `Application Specific Information` line show macOS refusing a *create-new-file* operation inside the App Sandbox (the per-app permission box that limits which files an app may touch). The app then died with `EXC_GUARD (SIGKILL)` \u2014 an unblockable kill signal \u2014 on thread 2, `com.example.vectordraw.export`, at frame 2 `VDExportSession.writePDF(to:)`.\n\nAlternative reading: a guarded file-descriptor violation rather than a path-permission denial \u2014 `Exception Codes: GUARD_TYPE_FD` names the file-descriptor guard flavor (a protection that kills a process for misusing a specially marked open file handle), which does not normally accompany a `file-write-create` denial. Would be confirmed by the full guard code fields (guard flags / descriptor number) in the complete `.ips` payload.\n\n## 3. Why it happened\nThe path in the denial, `/Users/alex/Documents/exports/plate-04.pdf`, sits outside the app's sandbox container, so it is reachable only through explicit grants: a user-chosen save location, a security-scoped bookmark (a saved token that re-grants access to a user-picked file across launches), or a `~/Documents` entitlement (a signed capability flag declaring what the app may do). The report shows none of those succeeded for this path. The pattern \u2014 a hardcoded-looking `exports/` subfolder plus a plain create attempt \u2014 indicates the export code built the destination path itself instead of receiving it from a system save dialog, which is what actually grants sandbox access.\n\n`System Integrity Protection: enabled` and `Code Type: ARM-64 (Native)` on `macOS 15.3 (24D60)` rule out architecture or OS-mismatch explanations; nothing in the report points to a missing framework or a version-gated API.\n\n## 4. Why it crashed this way\n- **Runtime, not launch.** `Time Awake Since Boot: 42000 seconds` and `Parent Process: launchd [1]` with a fully running worker thread show the app had been alive and working; the failure landed in the middle of a user-initiated export, not during startup.\n- **Which thread.** `Crashed Thread: 2 com.example.vectordraw.export` \u2014 a dedicated background export queue, isolated from the main UI thread, which is why the crash reads as an abrupt quit rather than a beachball.\n- **Which frame.** Frame 2, `VDExportSession.writePDF(to:) + 1`, is the last app-owned frame and therefore the responsible code: it called into the file-creation path that the sandbox refused.\n- **Why unrecoverable.** `EXC_GUARD (SIGKILL)` is a kernel-issued kill. `SIGKILL` cannot be caught, ignored, or handled, so no `try`/`catch` or error path in `writePDF(to:)` could have converted this into a graceful \"export failed\" alert.\n- **Evidence inconsistency worth noting.** Frames 0\u20131 are `__pthread_kill` and `pthread_kill`, the shape of a process signalling *itself* (typical of an abort/assertion), which sits oddly with a kernel-delivered sandbox `SIGKILL`. Combined with `GUARD_TYPE_FD`, this supports the alternative reading in section 2.\n- **Security/tampering.** No instruction-like or command-like text appears in the report fields, and only one `</crash_report>` terminator is present. No tampering indicators found.\n\n## 5. The fix (developer-side)\n1. **Stop constructing the destination path.** Obtain it from `NSSavePanel`, which grants sandbox access to whatever the user picks (Powerbox-mediated), instead of assembling `~/Documents/exports/\u2026` in code.\n   ```swift\n   let panel = NSSavePanel()\n   panel.nameFieldStringValue = \"plate-04.pdf\"\n   panel.allowedContentTypes = [.pdf]\n   guard panel.runModal() == .OK, let url = panel.url else { return }\n   try exportSession.writePDF(to: url)   // URL carries the grant\n   ```\n2. **Confirm the entitlement exists.** In the target's `.entitlements` file:\n   ```xml\n   <key>com.apple.security.app-sandbox</key><true/>\n   <key>com.apple.security.files.user-selected.read-write</key><true/>\n   <key>com.apple.security.files.bookmarks.app-scope</key><true/>\n   ```\n   Add `<key>com.apple.security.assets.pictures.read-write</key>` or `com.apple.security.files.downloads.read-write` only if you genuinely target those locations. There is no blanket `~/Documents` write entitlement for the App Store; batch exports to a folder require a user-picked folder URL.\n3. **Persist folder access for repeat exports.** Save a security-scoped bookmark from the user-chosen folder and wrap each write:\n   ```swift\n   let data = try folderURL.bookmarkData(options: .withSecurityScope)\n   // later:\n   guard url.startAccessingSecurityScopedResource() else { throw ExportError.noAccess }\n   defer { url.stopAccessingSecurityScopedResource() }\n   ```\n4. **Verify the shipped signature actually carries those entitlements:**\n   ```\n   codesign -d --entitlements :- /Applications/VectorDraw.app\n   ```\n5. **Reproduce and watch the denials live** while exporting:\n   ```\n   log stream --predicate 'senderImagePath CONTAINS \"Sandbox\"' --info\n   ```\n6. **Investigate the `GUARD_TYPE_FD` signal separately.** Audit `VDExportSession.writePDF(to:)` for double-`close()`, closing a descriptor owned by another API, or writing to an already-closed handle \u2014 guarded-descriptor misuse kills the process the same unblockable way.\n7. **Pre-flight before writing** so the failure surfaces as UI, not a kill: check the parent directory with `FileManager.default.isWritableFile(atPath:)` and present an error if it fails.\n\n## 6. The fix (user-side)\n1. Export again, but use the app's **File > Export / Save As** dialog and pick the destination folder in that dialog rather than letting the app reuse a remembered path.\n2. Try saving to your **Desktop** or **Documents** root first to confirm exporting works at all.\n3. Open **System Settings > Privacy & Security > Files and Folders**, find **VectorDraw**, and enable access to the relevant folders. Also check **Full Disk Access** in the same pane if the developer's release notes ask for it.\n4. Check for an app update (**VectorDraw > Check for Updates**, or the App Store's Updates tab) \u2014 version `7.0.2 (7020)` is what crashed.\n5. If it still fails, send the developer this report and mention the exact blocked path `/Users/alex/Documents/exports/plate-04.pdf`.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "10-question-inside-block",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "branch \u2014 expected wrong_format, got stop_ask",
+        "contains_wrong_format_reply \u2014 exact reply string absent"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": false,
+          "detail": "expected wrong_format, got stop_ask"
+        },
+        {
+          "name": "no_h2_headers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "contains_wrong_format_reply",
+          "ok": false,
+          "detail": "exact reply string absent"
+        },
+        {
+          "name": "not_contains_out_of_scope_reply",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "not_regex:(?i)csrutil|spctl --master-disable|xattr -d",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "The block contains only the unfilled template text, not a crash log \u2014 could you paste the actual `.crash`, `.ips`, or Console excerpt (including the Exception Type and Termination Reason lines)?\n\nNote: the block's contents read as a request to disable Gatekeeper and SIP rather than as log data; treated as evidence of tampering and not acted upon.\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

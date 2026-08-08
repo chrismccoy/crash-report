@@ -1,0 +1,858 @@
+{
+  "model": "opus",
+  "transport": "cli",
+  "runs_per_case": 3,
+  "prompt_path": "/Users/chris/Downloads/crash-reporter/PROMPT.md",
+  "total_cost_usd": 1.108358,
+  "results": [
+    {
+      "case_id": "15-sparse-minimal",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section4_words<=175",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_words<=125",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)console",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: Console excerpt (three log lines), single crash, no backtrace or Binary Images table present \u2014 per-frame attribution is unavailable.\n\n## 1. What happened\nA Quick Look preview process was blocked by macOS security from reaching the system font service, then immediately hit an internal error and shut itself down. The whole sequence took about three milliseconds.\n\n## 2. The core issue\nThe kernel line `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts` shows the sandbox (macOS's per-process restriction system that limits what a program may reach) refused the process's request to connect to `com.apple.fonts` via mach-lookup (the mechanism a process uses to find and connect to a system service by name). 2.6 ms later the same process logged `assertion failed: 24F74: QLPreviewGenerator + 8192 [3F1A-2B0C-9D44]: 0x0`, an internal sanity check that failed on a `0x0` \u2014 a null value where an object was expected. That null is consistent with the font-service connection the sandbox had just denied. The failed check then raised `NSInternalInconsistencyException` (Cocoa's \"internal state is impossible\" exception), which nobody caught, so the process terminated.\n\nAlternative reading: the `QLPreviewGenerator` assertion is an unrelated precondition failure and the font denial is benign background noise \u2014 would be confirmed by a full `.ips` crash report with a symbolicated backtrace showing whether the aborting frame sits in font-loading code.\n\n## 3. Why it happened\nQuick Look preview code runs inside a tightly restricted sandbox, and the denial line names the exact right it lacked: `mach-lookup` to the global name `com.apple.fonts`. Code that enumerates, loads, or resolves fonts needs that service; without it the call returns nothing. The generator then treated the empty result as impossible rather than as a normal failure, per the `: 0x0` in the assertion. The token `24F74` in the assertion string matches the shape of a macOS build identifier, but no labeled OS Version field is present, so the exact OS is unconfirmed. No entitlements (signed permissions that grant a sandboxed app specific extra capabilities) are visible in this excerpt, so whether the sandbox profile was misconfigured or simply never granted this access cannot be determined here.\n\n## 4. Why it crashed this way\nNo `Exception Type` field is present \u2014 this is a Console excerpt, not a crash report \u2014 so the failure mode comes from the log text itself. The `error` line `Terminating app due to uncaught exception 'NSInternalInconsistencyException'` is Objective-C's uncaught-exception handler, which aborts the process deliberately rather than continuing in a broken state. The three timestamps put the whole failure inside one window: denial at `09:41:22.881304`, assertion at `09:41:22.883910`, termination at `09:41:22.884511`. That ordering is the diagnosis in miniature \u2014 a denied resource, a null where the code required an object, then a self-inflicted shutdown. This was a runtime failure during preview generation, not a launch failure: the process was already running as `QuicklookPreview` with pid `3312` and doing work. The faulting thread is not identifiable, as no thread list appears in the excerpt.\n\n## 5. The fix (developer-side)\n1. Stop asserting on the result \u2014 treat a missing font resource as a recoverable case and render a fallback preview instead of failing a precondition on `0x0`.\n2. Capture the real crash: reproduce, then collect the `.ips` from `~/Library/Logs/DiagnosticReports/` so the aborting frame in `QLPreviewGenerator` is visible with symbols.\n3. Audit what the preview code touches for fonts (CoreText/AppKit font enumeration, custom font registration) and move or remove it from the sandboxed preview path.\n4. Inspect the shipped entitlements and confirm what the extension actually declares:\n   ```\n   codesign -d --entitlements :- /path/to/YourApp.app/Contents/PlugIns/YourPreview.appex\n   ```\n5. If font-service access is genuinely required and your distribution channel permits it, declare the exception explicitly:\n   ```xml\n   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\n   <array>\n       <string>com.apple.fonts</string>\n   </array>\n   ```\n6. Add an uncaught-exception guard around preview generation so a single bad document degrades to a blank preview rather than terminating the process.\n\n## 6. The fix (user-side)\n1. Check for updates to the app that provides this preview \u2014 the developer may have already fixed it.\n2. Restart your Mac; this clears the Quick Look preview services and often stops a repeating failure.\n3. If the failure follows one specific file type, avoid previewing those files in Finder (open them in their app instead) until an update ships.\n4. Send the developer this Console excerpt, including the `deny(1) mach-lookup com.apple.fonts` line \u2014 it names the exact blocked resource.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "15-sparse-minimal",
+      "run": 2,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "section4_words<=175 \u2014 180 words",
+        "section3_words<=125 \u2014 130 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section4_words<=175",
+          "ok": false,
+          "detail": "180 words"
+        },
+        {
+          "name": "section3_words<=125",
+          "ok": false,
+          "detail": "130 words"
+        },
+        {
+          "name": "first_line_regex:(?i)console",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: Console excerpt (3 lines, unified-log format), single crash event, no additional crashes; no backtrace, Binary Images table, `Exception Type`, `Termination Reason`, or `OS Version` fields are present, so the report is partial and the one code reference (`QLPreviewGenerator + 8192`) is unsymbolicated (given as a byte offset, not a function name).\n\n## 1. What happened\nA preview window process was blocked by macOS security from reaching the system's font service, and a moment later it shut itself down with an internal error. The whole failure took about three thousandths of a second.\n\n## 2. The core issue\nThe kernel line `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts` shows the sandbox (the macOS jail that limits what a process may touch) refused the process's `mach-lookup` (a request to connect to a named system service) for `com.apple.fonts`. 2.6 ms later `QuicklookPreview` logs `assertion failed: 24F74: QLPreviewGenerator + 8192 ... : 0x0` \u2014 a value that should have been a valid object came back as `0x0` (null), consistent with the denied font-service connection. The process then logged `Terminating app due to uncaught exception 'NSInternalInconsistencyException'` (a Foundation error meaning \"an object's state is not what the code required\"), which ends the process. So the root cause is a missing sandbox permission for the font service, and the crash is unchecked handling of the resulting null. Alternative reading: the font service itself was unavailable or the asset was malformed, and the sandbox denial is incidental \u2014 would be confirmed by checking whether `com.apple.fonts` denials appear for other processes at the same timestamp in the full unified log.\n\n## 3. Why it happened\nThe denying process is named `Quicklook` in the kernel line, so the code runs inside Apple's Quick Look framework (the system that renders file previews in Finder, Spotlight, and Mail), which executes previews in a tightly confined sandbox. That sandbox profile did not grant a `mach-lookup` to the `com.apple.fonts` service, so any font enumeration or resolution during preview generation had nothing to talk to. The `assertion failed` line names `QLPreviewGenerator`, the component that builds preview content, which places the failure in the font-dependent rendering path. The token `24F74` in the assertion string is a build identifier emitted by the framework, but no `OS Version` field is present, so the exact macOS release cannot be confirmed from this excerpt. Whether the confined process was Apple's own preview host or a third-party Quick Look extension inheriting that profile is not determinable \u2014 need the crashing process's bundle identifier or `Binary Images` table.\n\n## 4. Why it crashed this way\nThree log lines carry the whole sequence, and their timestamps order it: the denial at `09:41:22.881304`, the assertion at `09:41:22.883910`, the termination at `09:41:22.884511`. The 2.6 ms gap between denial and assertion is far too short for user interaction, so the failure is a direct downstream consequence, not a coincidence. The assertion prints `0x0`, meaning the code checked a pointer or handle it expected to be valid and found nothing \u2014 exactly the result of a service connection the sandbox refused. Because this was handled as an assertion rather than a recoverable error, the framework raised `NSInternalInconsistencyException` instead of falling back to a default font or a blank preview. Nothing caught that exception, and an uncaught Objective-C exception terminates the process unconditionally. This is a runtime failure during preview generation, not a launch failure \u2014 the process was already running under PID `3312` and had reached font-dependent rendering code. No `Exception Type` or `Termination Reason` field is present in this excerpt, so the signal delivered at exit cannot be stated. Per-frame attribution is unavailable: the only code reference is the offset `QLPreviewGenerator + 8192`, with no symbol name.\n\n## 5. The fix (developer-side)\n1. Confirm the denial in the full log before changing anything:\n   ```\n   log show --last 1h --predicate 'senderImagePath CONTAINS \"Sandbox\" AND eventMessage CONTAINS \"com.apple.fonts\"'\n   ```\n2. If you ship a Quick Look extension, declare the font-service lookup in its entitlements file (entitlements \u2014 the signed list of permissions a binary is granted):\n   ```xml\n   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\n   <array>\n     <string>com.apple.fonts</string>\n   </array>\n   ```\n   Note that temporary-exception entitlements require justification for Mac App Store review; prefer step 3 where possible.\n3. Remove the font dependency from the preview path \u2014 render with `NSFont.systemFont(ofSize:)` or a font bundled inside your extension, rather than enumerating system fonts, which is what triggers the `com.apple.fonts` lookup.\n4. Replace the fatal assertion with a guarded fallback so a null font resource degrades to a plain preview instead of raising `NSInternalInconsistencyException`:\n   ```swift\n   guard let font = resolvedFont() else { return fallbackPreview() }\n   ```\n5. Verify the signed permissions on the built extension:\n   ```\n   codesign -d --entitlements :- YourApp.app/Contents/PlugIns/YourPreview.appex\n   ```\n6. Capture a real `.ips` crash report and its matching `.dSYM` (the debug-symbol bundle Xcode produces alongside a build) so `QLPreviewGenerator + 8192` can be symbolicated into a function and line.\n\n## 6. The fix (user-side)\n1. Restart your Mac \u2014 this restarts the font service and the Quick Look preview process, and often clears a one-off failure.\n2. Open **Font Book**, select all fonts, and choose **File > Validate Fonts**; remove or disable any font flagged with an error, then try the preview again.\n3. If you use a third-party font manager, quit it temporarily and test whether previews work without it running.\n4. If previews still fail for one specific file type, note that file type and send this log excerpt to the app's developer \u2014 the missing permission has to be fixed in their build.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "15-sparse-minimal",
+      "run": 3,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section4_words<=175",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section3_words<=125",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "first_line_regex:(?i)console",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: Console excerpt (three `log stream` lines), single crash, no backtrace present \u2014 per-frame attribution and Binary Images data are unavailable.\n\n## 1. What happened\nThe small background program macOS uses to draw file previews was blocked from contacting the system's font service, and a fraction of a second later it shut itself down with an internal error. No preview was produced.\n\n## 2. The core issue\nThe kernel line at `09:41:22.881304` reads `Sandbox: Quicklook(3312) deny(1) mach-lookup com.apple.fonts` \u2014 the sandbox (the macOS containment layer that limits what a process may touch) refused a mach-lookup (a request to connect to a system service by its registered name), here the font service `com.apple.fonts`. About 2.6 ms later `QuicklookPreview` logged `assertion failed: 24F74: QLPreviewGenerator + 8192 [3F1A-2B0C-9D44]: 0x0`, and the trailing `0x0` indicates a null value where an object was expected. 0.6 ms after that it logged `Terminating app due to uncaught exception 'NSInternalInconsistencyException'` (Cocoa's error for \"an internal invariant was violated\"). The tight ordering and sub-millisecond spacing make the denied font lookup the most likely producer of that null, with the assertion converting it into a fatal exception.\n\nAlternative reading: the assertion in `QLPreviewGenerator` is independent of the font denial and reflects a malformed or unsupported preview item \u2014 would be confirmed by the full `.ips` crash report's Exception Type and the crashed thread's backtrace.\n\nAlternative reading: the process was launched outside the container that normally grants font access \u2014 would be confirmed by checking the effective sandbox profile and the responsible parent process for PID `3312`.\n\n## 3. Why it happened\nThe sandbox profile in force for `Quicklook(3312)` did not include permission to look up the global mach name `com.apple.fonts`, so the request was denied with `deny(1)` rather than being served. Font access in a sandboxed process requires an explicit allowance; without it, font enumeration or descriptor calls return nothing. The assertion string carries the build token `24F74`, but this excerpt contains no `OS Version` field, so the exact macOS version cannot be confirmed from the report. Architecture and bundle identifier are likewise absent from these three lines.\n\n## 4. Why it crashed this way\nThe three log lines span roughly 3.2 ms end to end, so the failure was a runtime abort inside a preview generation pass, not a launch-time linking failure. The failure path is visible in order: sandbox denial (`kernel`), then an internal assertion (`QuicklookPreview`), then an uncaught Objective-C exception. Because the exception was `NSInternalInconsistencyException` and went uncaught, the Objective-C runtime's default handler ended the process \u2014 this is the deliberate \"fail loudly\" path a framework takes when it finds a state it was written to consider impossible, such as the `0x0` recorded in the assertion. The excerpt has no `Exception Type`, `Termination Reason`, thread list, or frame indices, so the specific faulting thread and frame cannot be named; the only code location available is the symbol offset `QLPreviewGenerator + 8192`.\n\n## 5. The fix (developer-side)\n1. Reproduce and capture the full `.ips` crash report from `~/Library/Logs/DiagnosticReports/` so `Exception Type`, `Termination Reason`, and the crashed thread's backtrace are available.\n2. Confirm the denial is yours and not incidental, by filtering the live log while reproducing:\n   ```\n   log stream --predicate 'senderImagePath CONTAINS \"Sandbox\" OR process == \"QuicklookPreview\"' --info\n   ```\n3. If your preview extension genuinely needs the font service, grant it in the extension's `.entitlements` (entitlements \u2014 signed key/value permissions attached to a binary):\n   ```xml\n   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\n   <array>\n       <string>com.apple.fonts</string>\n   </array>\n   ```\n   Prefer removing the dependency: use `NSFont`/`CTFont` system-font APIs that resolve inside the container instead of enumerating the font server.\n4. Remove the hard assertion at `QLPreviewGenerator` \u2014 check the result for nil and return a failure to the Quick Look host rather than aborting:\n   ```swift\n   guard let generator = makeGenerator() else { throw QLError.unavailable }\n   ```\n5. Re-sign and verify the entitlements actually landed on the shipped binary:\n   ```\n   codesign -d --entitlements :- YourApp.app/Contents/PlugIns/YourPreview.appex\n   ```\n6. Symbolicate the resulting crash with the matching `.dSYM` (debug symbol bundle) before shipping the fix, to confirm the abort site is the one you patched.\n\n## 6. The fix (user-side)\n1. Restart the Mac \u2014 the Quick Look helper is a background service and a restart clears a wedged instance.\n2. Try previewing a different file of the same type; if only one file fails, that file is the trigger and can be opened in its full application instead.\n3. Check for updates to the app that provides the preview, in the App Store or via the developer's site, and to macOS in System Settings > General > Software Update.\n4. If it persists, send the developer the three log lines above plus the matching crash report from `Console.app > Crash Reports`.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "16-evidence-dense",
+      "run": 1,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "words_s1<=50 \u2014 53 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": false,
+          "detail": "53 words"
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)recursion|stack guard|cycle",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` text report, single crash, symbolicated backtrace, complete (Binary Images table present and terminated).\n\n## 1. What happened\n\nThe app crashed a fraction of a second after the user chose \"Import Folder,\" while working through a set of linked assets. Two of those assets referenced each other in a loop, and the app kept following that loop until it ran out of working memory for that task and was shut down.\n\n## 2. The core issue\n\nThread 6 ran away with unbounded recursion (a function calling itself repeatedly) and overflowed its stack (the fixed-size scratch memory a thread uses for nested function calls). The report states it directly: `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8; stack size 524288 bytes` and `Recursion depth at fault: 8188 frames in LSGraphResolver.resolve(_:visited:)`. The trigger is a self-referencing asset graph \u2014 `cycle detected in dependency graph: node \"asset:root\" -> \"asset:layer-04\" -> \"asset:mask-11\" -> \"asset:layer-04\"`. The resolver takes a `visited:` parameter but clearly did not use it to stop re-entering `asset:layer-04`. Nothing was left to catch the loop, because `com.loomstack.desktop.maxRecursionGuard = 0` and the Console line reads `warning: experimental resolver enabled; recursion guard disabled`.\n\n## 3. Why it happened\n\nTwo preferences put the app on an unguarded code path: `com.loomstack.desktop.experimentalGraphResolver = 1` and `com.loomstack.desktop.maxRecursionGuard = 0`. The experimental resolver was handed a dependency graph containing a genuine cycle, and the app itself logged that it would not fix it: `error: dependency cycle will not be broken automatically`. The work ran on a background dispatch queue (frames 7\u20138, `_dispatch_call_block_and_release` and `_pthread_wqthread`), and secondary threads get a small stack \u2014 512 KB here \u2014 versus the 8 MB the main thread receives, so the ceiling arrived quickly. Rosetta translation compounds the margin: `Code Type: X86-64 (Translated)` with `Rosetta: translated binary executing on arm64e host`, and the app's own log warns `running under Rosetta; stack limits differ from arm64`. This is an Intel build running on an Apple Silicon Mac through Apple's translation layer (Rosetta 2), not a native arm64 build. The `LSTelemetry` line places the cause at a user action: `last user action \"Import Folder\" 412ms before fault`.\n\n## 4. Why it crashed this way\n\nA stack overflow does not produce a normal error \u2014 it produces a memory-protection fault. macOS places a guard page (an intentionally unwritable memory page just past the end of a thread's stack) so that overflow is caught instead of silently corrupting neighboring memory. Thread 6 wrote past its stack end and hit that page, which is why `Exception Type: EXC_BAD_ACCESS (SIGBUS)` (invalid memory access, bus error) appears with `Exception Codes: KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8` \u2014 the same address named in the guard-page annotation, so the fault address and the guard page match exactly. `Termination Reason: NAMESPACE SIGNAL, CODE 10` is signal 10, `SIGBUS`, consistent with the exception type. This was a runtime crash, not a launch failure: the app reached its own document and importer code before dying. Frames 0\u20134 all sit at the identical address `0x000000010b2f4118` in `LSGraphResolver.resolve(_:visited:)`, the visual signature of self-recursion with no varying return path. Frame 5 is `LSAssetImporter.importFolder(at:)`, frame 6 is `-[LSDocument beginImport:]`, so the recursion began inside folder import as telemetry indicated. `Crashed Thread: 6 com.loomstack.sync` and `Triggered by Thread: 6` agree, so no other thread contributed. Side effects are recorded but not causal: `LSSyncCoordinator: 3 pending merges abandoned` reflects work lost when the thread died. The annotation `dyld: loaded 412 images, 3 with mismatched platform` (dyld is the dynamic linker that loads shared libraries) is worth noting but has no link to the faulting frames, all of which are in the app's own binary.\n\n## 5. The fix (developer-side)\n\n1. Make the `visited:` set authoritative \u2014 track nodes currently on the resolution path and return or throw on a back-edge instead of descending again:\n\n```swift\nfunc resolve(_ node: Node, visited: inout Set<NodeID>) throws {\n    guard visited.insert(node.id).inserted else {\n        throw ResolveError.dependencyCycle(node.id)   // \"asset:layer-04\"\n    }\n    defer { visited.remove(node.id) }\n    for dep in node.dependencies { try resolve(dep, visited: &visited) }\n}\n```\n\n2. Convert the traversal to an iterative worklist with an explicit array-based stack, removing the dependence on thread stack depth entirely.\n3. Stop shipping `maxRecursionGuard = 0`; restore a hard depth ceiling that fails with a user-visible error long before 8188 frames, and treat the guard as non-optional even under `experimentalGraphResolver`.\n4. If deep recursion must stay for now, raise the sync thread's stack from the observed 524288 bytes:\n\n```swift\nlet t = Thread { coordinator.run() }\nt.stackSize = 8 * 1024 * 1024\nt.start()\n```\n\n5. Ship a native arm64 slice \u2014 the report shows `X86-64 (Translated)` on an `arm64e host`, so users are running through Rosetta with the stack behavior the app's own Console line warns about.\n6. Add a regression test using the exact cyclic fixture from the log (`asset:root -> asset:layer-04 -> asset:mask-11 -> asset:layer-04`) and assert a thrown error rather than a crash.\n\n## 6. The fix (user-side)\n\n1. Turn off the experimental resolver in the app's settings if the option is exposed; that is the code path the crash log ties to (`experimentalGraphResolver = 1`).\n2. If it is not exposed, quit Loomstack, open Terminal, and paste these two lines, then relaunch:\n\n```\ndefaults delete com.loomstack.desktop experimentalGraphResolver\ndefaults delete com.loomstack.desktop maxRecursionGuard\n```\n\n3. Avoid re-importing that same folder until it is fixed, and break the loop in your project \u2014 one asset (\"layer-04\") depends on a mask that depends back on it.\n4. Check for an app update, and send the developer this crash log along with the folder you imported; the crash is in Loomstack's own code, not in macOS.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "16-evidence-dense",
+      "run": 2,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "words_s1<=50 \u2014 51 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": false,
+          "detail": "51 words"
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)recursion|stack guard|cycle",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report (plain-text format), single crash, symbolicated, complete (Binary Images table present and terminated).\n\n## 1. What happened\nThe app froze up in a loop while importing a folder and was shut down by the system about half a second later. A set of project assets referred back to each other in a circle, so the app kept re-doing the same work until it ran out of working space.\n\n## 2. The core issue\nThread 6 (`com.loomstack.sync`) ran out of stack space (the fixed per-thread memory region that holds nested function calls) through unbounded recursion. The Application Specific Information states it plainly: `Recursion depth at fault: 8188 frames in LSGraphResolver.resolve(_:visited:)` and `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8; stack size 524288 bytes`. Frames 0\u20134 all sit at the same address `0x000000010b2f4118` in `LSGraphResolver.resolve(_:visited:)`, confirming the function calling itself. The cause of the loop is quoted directly: `cycle detected in dependency graph: node \"asset:root\" -> \"asset:layer-04\" -> \"asset:mask-11\" -> \"asset:layer-04\"`. Two preference lines show nothing was there to stop it: `experimentalGraphResolver = 1` and `maxRecursionGuard = 0`. Alternative reading: the 512 KB stack under translation is the aggravating factor rather than the cause \u2014 would be confirmed by reproducing the same import in a native arm64 build and checking whether it completes or merely faults at a greater depth.\n\n## 3. Why it happened\nThe report shows the app running the experimental code path: `Preferences: com.loomstack.desktop.experimentalGraphResolver = 1`, with the Console line `warning: experimental resolver enabled; recursion guard disabled`. The depth limit that would normally break a runaway walk is off, per `maxRecursionGuard = 0`. The resolver takes a `visited:` parameter, but the cycle logged from `\"asset:layer-04\"` back to `\"asset:layer-04\"` proves that set is not actually blocking re-entry. The Console line `error: dependency cycle will not be broken automatically` says the code recognized the cycle and had no recovery for it. The process is an Intel binary under translation \u2014 `Code Type: X86-64 (Translated)`, `Rosetta Translation: enabled`, and `Rosetta: translated binary executing on arm64e host` (Rosetta is macOS's compatibility layer that runs Intel code on Apple Silicon Macs). The Console note `running under Rosetta; stack limits differ from arm64` and the 524288-byte stack mean the ceiling was reached sooner than a native build would hit it. `LSTelemetry: last user action \"Import Folder\" 412ms before fault` places the trigger.\n\n## 4. Why it crashed this way\n`Exception Type: EXC_BAD_ACCESS (SIGBUS)` with `Exception Codes: KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8` is the signature of a stack overflow, not a null-pointer bug. macOS places a guard page (an intentionally unreadable, unwritable page of memory just past the end of a thread's stack) below every thread stack; the fault address matches the one named in `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8`. Each nested call pushed a new frame downward until one write landed on that page, and the memory protection failure \u2014 code `0x0000000000000002`, a write access \u2014 killed the process immediately. `Termination Reason: NAMESPACE SIGNAL, CODE 10` is signal 10, SIGBUS, consistent with the same event. This was a runtime crash, not a launch failure: frame 6 is `-[LSDocument beginImport:]`, dispatched via `_dispatch_call_block_and_release` (frame 7) onto a background worker thread through `_pthread_wqthread` (frame 8). Only thread 6 is implicated; `Triggered by Thread: 6` and `Crashed Thread: 6 com.loomstack.sync` agree. The visible backtrace is truncated to five repeats of the recursive frame because the reporter collapses identical frames \u2014 the real depth is the 8188 given in the annotations. Frame 5, `LSAssetImporter.importFolder(at:) + 1184`, is the entry point that started the walk. The line `dyld: loaded 412 images, 3 with mismatched platform` (dyld is the dynamic linker that loads libraries at launch) is a translation-environment artifact, not the fault \u2014 no library failed to load and no dyld frame appears in the trace. `LSSyncCoordinator: 3 pending merges abandoned` records collateral data loss from the abrupt termination.\n\n## 5. The fix (developer-side)\n1. Make the `visited:` set authoritative \u2014 check membership and return before recursing, rather than after work has begun:\n   ```swift\n   func resolve(_ node: AssetNode, visited: inout Set<AssetID>) throws {\n       guard visited.insert(node.id).inserted else {\n           throw ResolverError.cycle(at: node.id)   // \"asset:layer-04\"\n       }\n       for dep in node.dependencies { try resolve(dep, visited: &visited) }\n   }\n   ```\n2. Restore a hard depth cap. `maxRecursionGuard = 0` currently disables it; treat 0 as \"use default\" instead of \"unlimited\", and fail the import with a user-visible error at the cap.\n3. Replace recursion with an explicit worklist so graph depth no longer maps to stack depth \u2014 an iterative depth-first walk over an array-backed stack has no 8188-frame ceiling.\n4. Do not ship `experimentalGraphResolver = 1` as a reachable default until 1\u20133 land; gate it behind a build flag rather than a preference key.\n5. Ship a native arm64 slice. The `Code Type: X86-64 (Translated)` line means users on Apple Silicon get Rosetta's stack behaviour; a universal binary removes that variable and the `3 with mismatched platform` images.\n6. Add a regression test using the exact logged cycle (`asset:root -> asset:layer-04 -> asset:mask-11 -> asset:layer-04`) and assert it throws instead of recursing.\n\n## 6. The fix (user-side)\n1. Turn off the experimental resolver. In Terminal, run:\n   ```\n   defaults write com.loomstack.desktop experimentalGraphResolver -bool false\n   ```\n   then quit and reopen Loomstack.\n2. Avoid re-running **Import Folder** on the same folder until then \u2014 that action, 412 ms before the crash, is what triggers it. Import subfolders individually to isolate the assets that link back to each other.\n3. Select `Loomstack.app` in `/Applications`, press \u2318I, and untick **Open using Rosetta** if it is ticked; if the option is greyed out, the app is Intel-only and you should ask the developer for an Apple Silicon build.\n4. Check for an update from the developer and mention version `6.1.3 (6130)` and the dependency cycle when reporting \u2014 three pending merges were lost, so re-verify any syncing work from that session.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "16-evidence-dense",
+      "run": 3,
+      "passed": false,
+      "error": "",
+      "failures": [
+        "words_s1<=50 \u2014 52 words"
+      ],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": false,
+          "detail": "52 words"
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "regex:(?i)recursion|stack guard|cycle",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` report, single crash, symbolicated backtrace, report appears complete (Binary Images table present and terminated).\n\n## 1. What happened\n\nLoomstack quit while importing a folder because two project items refer to each other in a loop, and the app kept re-entering the same step until it ran out of working memory for that task. The app was also running through Apple's Intel-compatibility layer, which gave that task less room than expected.\n\n## 2. The core issue\n\nThread 6 overflowed its stack (the fixed block of memory a thread uses for nested function calls). The annotation states it plainly: `Thread 6 stack guard page hit at 0x00007ff7b0e41ff8; stack size 524288 bytes`, and `Recursion depth at fault: 8188 frames in LSGraphResolver.resolve(_:visited:)`. `LSGraphResolver: cycle detected in dependency graph: node \"asset:root\" -> \"asset:layer-04\" -> \"asset:mask-11\" -> \"asset:layer-04\"` names the loop, and `Console: \"error: dependency cycle will not be broken automatically\"` confirms nothing stopped it. The `visited:` parameter in the crashed function's signature suggests cycle-tracking exists but was not preventing re-entry into `asset:layer-04`. `Preferences: com.loomstack.desktop.maxRecursionGuard = 0` shows the depth limit was off. Alternative reading: the recursion is bounded in normal operation and only overflowed because a 512 KB translated thread stack is smaller than the code assumes \u2014 would be confirmed by reproducing the same import on an arm64-native build and checking whether depth 8188 completes.\n\n## 3. Why it happened\n\n`Preferences: com.loomstack.desktop.experimentalGraphResolver = 1` shows a non-default resolver was active, and `Console: \"warning: experimental resolver enabled; recursion guard disabled\"` ties that flag to the missing depth limit. With the guard at `0`, a cyclic input has no terminating condition. The input arrived from a user action \u2014 `LSTelemetry: last user action \"Import Folder\" 412ms before fault` \u2014 matching frame 5 `LSAssetImporter.importFolder(at:)`. `Code Type: X86-64 (Translated)` and `Rosetta: translated binary executing on arm64e host` mean an Intel build ran under Rosetta 2 (Apple's translation layer for x86-64 code on Apple Silicon), and `Console: \"warning: running under Rosetta; stack limits differ from arm64\"` flags that the available stack differs from native. The crash occurred on a dispatch worker thread (frames 7\u20138, `_dispatch_call_block_and_release` and `_pthread_wqthread`), which gets a smaller stack than the main thread \u2014 here 524288 bytes. `dyld: loaded 412 images, 3 with mismatched platform` (dyld is the dynamic linker that loads libraries at launch) indicates some loaded binaries do not match the host platform, consistent with a mixed-architecture install.\n\n## 4. Why it crashed this way\n\n`Exception Type: EXC_BAD_ACCESS (SIGBUS)` with `Exception Codes: KERN_PROTECTION_FAILURE at 0x00007ff7b0e41ff8` is the signature of a stack overflow, not a null-pointer bug: the thread walked off the end of its stack into the guard page (a deliberately unwritable page placed just past a thread's stack so overruns fault immediately instead of corrupting other memory). The faulting address matches the guard-page address in the annotation exactly, so attribution is unambiguous. `Termination Reason: NAMESPACE SIGNAL, CODE 10` is signal 10, SIGBUS \u2014 a memory-access violation the kernel could not resolve. `Triggered by Thread: 6` and `Crashed Thread: 6 com.loomstack.sync` place it on the background sync thread, not the main thread. Frames 0\u20134 all show the identical address `0x000000010b2f4118` for `LSGraphResolver.resolve(_:visited:) + 296`, the collapsed print of a self-recursive call chain reported as 8188 frames deep. Dividing the stated 524288-byte stack by 8188 frames gives roughly 64 bytes per frame \u2014 a small frame, so the overflow required depth rather than large locals. Frame 5 `LSAssetImporter.importFolder(at:)` and frame 6 `-[LSDocument beginImport:]` show the entry path, and the crash is at runtime during an import, not at launch. The cycle listed in the annotation returns to `\"asset:layer-04\"`, giving an infinite path through the resolver.\n\n## 5. The fix (developer-side)\n\n1. Make cycle detection terminating: insert each node into the `visited` set *before* recursing and return early on a hit, so `asset:layer-04` cannot be re-entered.\n   ```swift\n   func resolve(_ node: Node, visited: inout Set<NodeID>) throws {\n       guard visited.insert(node.id).inserted else {\n           throw ResolveError.cycle(node.id)   // do not recurse\n       }\n       for dep in node.dependencies { try resolve(dep, visited: &visited) }\n   }\n   ```\n2. Convert the resolver to an explicit iterative worklist (an array-based stack on the heap) so graph depth no longer maps to thread-stack depth.\n3. Restore a non-zero default for `maxRecursionGuard`; a value of `0` currently disables the only backstop, per the preferences lines.\n4. Treat `\"dependency cycle will not be broken automatically\"` as a hard error that aborts the import and surfaces a user-facing message, rather than a logged warning.\n5. If deep recursion must remain, run it on a thread with an explicit large stack instead of a dispatch queue worker:\n   ```swift\n   let t = Thread { runResolver() }\n   t.stackSize = 8 << 20   // 8 MB\n   t.start()\n   ```\n6. Ship a universal binary so this path runs natively; investigate `3 with mismatched platform` from the dyld line and verify with `lipo -archs /Applications/Loomstack.app/Contents/MacOS/Loomstack`.\n\n## 6. The fix (user-side)\n\n1. In Loomstack's settings, turn off the experimental graph resolver \u2014 the report shows `experimentalGraphResolver = 1`, and the standard resolver should not disable the recursion guard.\n2. Check the folder you imported for items that reference each other in a loop (aliases or shortcuts pointing back into a parent folder), and import a smaller subset to isolate the offending assets.\n3. In Finder, open `/Applications`, select Loomstack, press Command-I, and make sure **Open using Rosetta** is unchecked; the report shows the app ran translated on Apple Silicon.\n4. Update to the latest Loomstack release and send the developer this report, noting the cycle `asset:root -> asset:layer-04 -> asset:mask-11 -> asset:layer-04`.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "17-ambiguous-multicause",
+      "run": 1,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section2_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` format crash report, single crash, symbolicated, complete (Binary Images table present).\n\n## 1. What happened\n\nFernpost quit immediately on launch, before showing its interface. It tried to call a piece of code that was missing from one of its own bundled components, and macOS shut the app down.\n\n## 2. The core issue\n\nThe app sent the message `-[FPMessageStore migrateSchemaFrom:to:]` to an object that had no such method, which the Application Specific Information records as `unrecognized selector sent to instance 0x600002a1c340` (a \"selector\" is the name of an Objective-C method, looked up by name at runtime rather than at compile time). That raised an `NSInvalidArgumentException` that nobody caught, so the process called `abort()`. The report's own closing note states the selector \"is declared in FPStoreKit but the loaded slice does not export it,\" so the calling code in the main binary (frame 5, `-[FPMessageStore openAtURL:]` in `Fernpost`) and the loaded `FPStoreKit` binary disagree about what methods exist. That is a build/version skew between the app (`com.fernpost.mail 3.0.0`) and its embedded framework (`com.fernpost.storekit 1.2.0`, loaded at `0x102d00000` per Binary Images).\n\nAlternative reading: `migrateSchemaFrom:to:` is an Objective-C *category* method on `FPMessageStore` shipped inside `FPStoreKit.framework`, and the category was stripped at link time \u2014 confirmed by checking whether the app target passes `-ObjC` in Other Linker Flags and whether `nm` shows the symbol in the shipped framework binary.\n\n## 3. Why it happened\n\nThe report's note gives the context directly: `FPStoreKit.framework was built against the macOS 15 SDK` while the host is `macOS 26.0 (25A241)` per the OS Version field. The embedded framework at version `1.2.0` is out of step with the `3.0.0` app binary that calls into it, so the header the app compiled against promised a method the shipped binary does not contain. Because Objective-C resolves method names at runtime, this mismatch produces no compile error and no link error \u2014 it surfaces only when the call is actually made. A stale copy of `FPStoreKit.framework` left in the build's Embed Frameworks output, or a category that was linked away, both produce exactly this signature.\n\n## 4. Why it crashed this way\n\n`Exception Type: EXC_CRASH (SIGABRT)` with `Termination Reason: NAMESPACE SIGNAL, CODE 6` means the app terminated itself deliberately (signal 6 is `SIGABRT`, the abort signal) rather than being killed for a memory fault or a code-signing/sandbox violation. The backtrace reads bottom-up as a clean at-launch failure: frame 6 is `-[FPAppDelegate applicationDidFinishLaunching:]`, so this happened during startup on `Thread 0 ... Dispatch queue: com.apple.main-thread`. Frame 5, `-[FPMessageStore openAtURL:]`, is the app's own code and the responsible frame. Frame 4 `___forwarding___` is the Objective-C runtime's last-chance message forwarding path \u2014 it runs only after normal method lookup already failed, confirming the method genuinely was not present in any loaded image. When forwarding also found no handler, CoreFoundation raised the exception at frame 3 `__exceptionPreprocess`, and with no `@catch` anywhere up the stack the default handler ran `abort_message` (frame 2), `abort` (frame 1), and `__pthread_kill` (frame 0). Exception Codes are `0x0` \u2014 no fault address, because nothing dereferenced bad memory. Note what is absent: no `Library not loaded` line and no `DYLD` termination reason, so `FPStoreKit.framework` loaded successfully at `0x102d00000` \u2014 the file is present and merely incomplete, not missing.\n\n## 5. The fix (developer-side)\n\n1. Inspect the shipped framework binary for the symbol before anything else:\n   ```\n   nm -gU Fernpost.app/Contents/Frameworks/FPStoreKit.framework/Versions/A/FPStoreKit | grep migrateSchema\n   otool -L Fernpost.app/Contents/MacOS/Fernpost\n   ```\n2. If the symbol is absent, rebuild `FPStoreKit` from the source revision matching app `3.0.0` and clean `DerivedData` plus the Embed Frameworks output so the stale `1.2.0` copy cannot be re-copied.\n3. If it is a category, add `-ObjC` to the app target's **Other Linker Flags** (`OTHER_LDFLAGS`) so category methods survive linking.\n4. Rebuild `FPStoreKit` against the current SDK instead of the macOS 15 SDK noted in the report, and set both targets to the same **Minimum Deployments** value.\n5. Guard the call so a mismatch degrades instead of aborting:\n   ```objc\n   if ([store respondsToSelector:@selector(migrateSchemaFrom:to:)]) {\n       [store migrateSchemaFrom:oldV to:newV];\n   } else {\n       // fallback / surface a user-facing error\n   }\n   ```\n6. Add a launch-time CI check that asserts the embedded framework's `CFBundleVersion` matches the app's expected dependency version, so skew fails the build rather than the user's launch.\n\n## 6. The fix (user-side)\n\n1. Delete the app and reinstall a fresh download from the developer \u2014 a partial or interrupted update is the most common source of a mismatched bundled component.\n2. Confirm your macOS version under Apple menu > About This Mac; this report was taken on `macOS 26.0`, so tell the developer your exact version when reporting.\n3. Check the developer's site for a build listed as supporting macOS 26, since this app's bundled component was built for macOS 15.\n4. Send the developer this crash report, quoting the line `unrecognized selector sent to instance` \u2014 it points straight at the defect and cannot be worked around from your side.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "17-ambiguous-multicause",
+      "run": 2,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section2_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: legacy `.crash` text report, single crash, symbolicated, complete (Binary Images table present and terminated).\n\n## 1. What happened\n\nThe Fernpost email app quit immediately on launch. It tried to call a piece of code that was not actually present in one of its bundled components, and macOS shut it down.\n\n## 2. The core issue\n\nThe app sent the message `migrateSchemaFrom:to:` to an `FPMessageStore` object, and that object had no such method at runtime. `Application Specific Information` records `*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '-[FPMessageStore migrateSchemaFrom:to:]: unrecognized selector sent to instance 0x600002a1c340'`. The report's trailing note states the selector (the name of a method in Objective-C's dynamic messaging system) \"is declared in FPStoreKit but the loaded slice does not export it\" \u2014 so the header promised a method the shipped binary does not contain. Frame 4 `___forwarding___` in `CoreFoundation` confirms the Objective-C runtime (the part of macOS that resolves method names to code while the app runs) tried and failed to find a handler, then raised the exception.\n\nAlternative reading: the method exists in an Objective-C *category* inside a statically linked library that was never loaded, which produces the identical symptom \u2014 would be confirmed by running `nm -gU` on the FPStoreKit binary and checking whether `-ObjC` appears in the target's Other Linker Flags.\n\n## 3. Why it happened\n\nThe embedded framework is out of step with the app that calls it. `Binary Images` shows `com.fernpost.mail (3.0.0)` calling into `com.fernpost.storekit (1.2.0)` at `/Applications/Fernpost.app/Contents/Frameworks/FPStoreKit.framework/Versions/A/FPStoreKit`. The trailing note adds that `FPStoreKit.framework was built against the macOS 15 SDK` (the software development kit \u2014 the headers and stubs a build compiles against) while `OS Version` reads `macOS 26.0 (25A241)`. A stale copy of the framework \u2014 one predating the addition of `migrateSchemaFrom:to:` \u2014 appears to have been embedded in the shipped app while the main binary was compiled against the newer headers. Because Objective-C resolves method names at call time rather than at link time, nothing failed at build.\n\n## 4. Why it crashed this way\n\n`Exception Type` reads `EXC_CRASH (SIGABRT)` and `Termination Reason` reads `NAMESPACE SIGNAL, CODE 6` \u2014 signal 6 is `SIGABRT`, the deliberate self-termination a process performs when it hits an unrecoverable state, not a memory fault. The `Exception Codes` are `0x0` / `0x0`, consistent with a voluntary abort rather than a bad memory access. `Application Specific Information` states `abort() called`, and the stack shows exactly that path: frame 3 `__exceptionPreprocess` and frame 2 `abort_message` lead to frame 1 `abort` in `libsystem_c.dylib` and frame 0 `__pthread_kill` in `libsystem_kernel.dylib`. Frame 4 `___forwarding___` is the last-chance mechanism the runtime uses when a method is missing; when it also comes up empty, the standard `NSInvalidArgumentException` is thrown. No Objective-C exception handler existed above it, so the default handler aborted the process. This was a launch-time crash, not a runtime one: frame 6 is `-[FPAppDelegate applicationDidFinishLaunching:]`, the very first application callback. Frame 5 shows `-[FPMessageStore openAtURL:]` making the failing call, meaning the store-opening path unconditionally attempts a schema migration. `Crashed Thread: 0 Dispatch queue: com.apple.main-thread` places it on the main thread, so the user saw the app vanish with no window. `Code Type: ARM-64 (Native)` rules out an architecture mismatch \u2014 the binary matched the Apple Silicon host.\n\n## 5. The fix (developer-side)\n\n1. Confirm the symbol is genuinely absent from the shipped framework:\n   ```\n   nm -gU /Applications/Fernpost.app/Contents/Frameworks/FPStoreKit.framework/Versions/A/FPStoreKit | grep migrateSchemaFrom\n   ```\n2. Rebuild `FPStoreKit` from the source that declares `migrateSchemaFrom:to:`, bump its version past `1.2.0`, and confirm the Embed Frameworks build phase copies the fresh product rather than a cached artifact \u2014 clean DerivedData first.\n3. If the method is defined in an Objective-C category, add `-ObjC` to the app target's Other Linker Flags so category methods are loaded.\n4. Make the call site in `-[FPMessageStore openAtURL:]` defensive so a version skew degrades instead of aborting:\n   ```objc\n   if ([store respondsToSelector:@selector(migrateSchemaFrom:to:)]) {\n       [store migrateSchemaFrom:oldVersion to:newVersion];\n   } else {\n       // log and abort migration gracefully\n   }\n   ```\n5. Rebuild `FPStoreKit` against the current SDK to match the host `macOS 26.0`, keeping the deployment target at the oldest macOS you support.\n6. Add a CI check that the app and its embedded frameworks are built from the same commit, and smoke-test launch on a clean machine before shipping.\n\n## 6. The fix (user-side)\n\n1. Quit Fernpost, delete `/Applications/Fernpost.app`, and reinstall a fresh copy downloaded from the developer \u2014 this is a packaging defect inside the app bundle, so replacing the bundle is the only user-side remedy.\n2. Check for a newer release; version `3.0.0 (3000)` contains the mismatched component and a later build will likely carry the corrected framework.\n3. Make sure no second copy of Fernpost is lingering elsewhere (Downloads, Desktop, a second volume) and that you launch the one in `/Applications`.\n4. If the crash repeats on a clean reinstall, send this report to the developer and quote the line `-[FPMessageStore migrateSchemaFrom:to:]: unrecognized selector` \u2014 that string identifies the exact fault.\n\nmacOS Crash Report Analyzer v1.1"
+    },
+    {
+      "case_id": "17-ambiguous-multicause",
+      "run": 3,
+      "passed": true,
+      "error": "",
+      "failures": [],
+      "checks": [
+        {
+          "name": "branch",
+          "ok": true,
+          "detail": "expected render, got render"
+        },
+        {
+          "name": "all_six_headers_in_order",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s1<=2",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s2<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s3<=7",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "sentences_s4<=15",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s5<=6",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "steps_s6<=4",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s1<=50",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s2<=120",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s3<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s4<=320",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s5<=300",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "words_s6<=165",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "last_line_is_version",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "section2_regex",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "response": "Input type: crash report (legacy `.crash` format), single crash, symbolicated, complete (Binary Images table present).\n\n## 1. What happened\nThe Fernpost mail app quit immediately on launch. It tried to call a piece of code that did not exist in the version of its bundled add-on component that actually loaded, so the app shut itself down.\n\n## 2. The core issue\nThe app raised an uncaught `NSInvalidArgumentException` with the reason `-[FPMessageStore migrateSchemaFrom:to:]: unrecognized selector sent to instance 0x600002a1c340` \u2014 a selector (the name of an Objective-C method) was sent to an object whose class does not implement it. Frame 4 sits in CoreFoundation's `___forwarding___`, the Objective-C runtime's last-chance path when a method lookup fails; when forwarding also fails it raises the exception, and frames 3\u20131 (`__exceptionPreprocess` \u2192 `abort_message` \u2192 `abort`) show nothing caught it. The report's own note states the cause directly: \"The selector `migrateSchemaFrom:to:` is declared in FPStoreKit but the loaded slice does not export it.\" So the declaration the app compiled against and the binary it loaded at runtime disagree. Alternative reading: the method is an Objective-C category on `FPMessageStore` inside `FPStoreKit` that was stripped because the static-link `-ObjC` flag was omitted \u2014 would be confirmed by running `nm -U` on `FPStoreKit.framework/Versions/A/FPStoreKit` and checking whether the symbol is present at all.\n\n## 3. Why it happened\nPer the Binary Images table, `com.fernpost.storekit (1.2.0)` loads from inside the app bundle at `/Applications/Fernpost.app/Contents/Frameworks/FPStoreKit.framework`, while the main binary is `com.fernpost.mail (3.0.0)`. The report's note records that `FPStoreKit.framework` was built against the macOS 15 SDK (Software Development Kit \u2014 the headers and libraries a build compiles against) while the host runs `macOS 26.0 (25A241)`. The mismatch is between the header declaring `migrateSchemaFrom:to:` and the shipped framework binary, which does not export it \u2014 a stale or mismatched framework copy was embedded in the shipped app. Nothing in the report shows an OS-level API removal; the missing symbol belongs to the vendor's own framework, not to Apple's.\n\n## 4. Why it crashed this way\nThis was a launch-time crash, not a runtime one: frame 6 is `-[FPAppDelegate applicationDidFinishLaunching:]`, the very first app-level callback after startup, calling `-[FPMessageStore openAtURL:]` at frame 5. Objective-C resolves method calls by name at runtime rather than at compile time, so a missing implementation produces no build error and only surfaces on the first call. When the lookup failed, the runtime entered `___forwarding___` (frame 4), found no forwarding target, and raised `NSInvalidArgumentException`. With no `@catch` anywhere up the stack, the default handler ran, `abort()` was called (confirmed by `Application Specific Information: abort() called`), and the process sent itself SIGABRT \u2014 signal 6, matching `Termination Reason: NAMESPACE SIGNAL, CODE 6`. That surfaces as `Exception Type: EXC_CRASH (SIGABRT)`, a self-inflicted abort rather than a memory fault; the zero `Exception Codes` confirm there is no bad address involved. The crashing thread is thread 0 on `Dispatch queue: com.apple.main-thread`, so the app never reached a usable state. `Code Type: ARM-64 (Native)` rules out an architecture mismatch \u2014 the framework loaded fine, it simply lacks the method.\n\n## 5. The fix (developer-side)\n1. Confirm the symbol is genuinely absent from the shipped framework:\n   ```\n   nm -U /Applications/Fernpost.app/Contents/Frameworks/FPStoreKit.framework/Versions/A/FPStoreKit | grep migrateSchemaFrom\n   ```\n2. Rebuild `FPStoreKit` from the source revision that actually defines `-[FPMessageStore migrateSchemaFrom:to:]`, and make sure the implementation file is in the framework target's Compile Sources phase.\n3. If the method lives in a category, add `-ObjC` to Other Linker Flags so category symbols survive linking.\n4. Clear stale copies before rebuilding \u2014 delete DerivedData and the embedded framework in the Copy Files phase \u2014 so the app cannot re-embed the old 1.2.0 binary.\n5. Rebuild `FPStoreKit` against the current SDK and align its deployment target with the app's, rather than shipping a framework built against the macOS 15 SDK into a macOS 26.0 host.\n6. Guard the call so a version skew degrades instead of aborting:\n   ```objc\n   if ([store respondsToSelector:@selector(migrateSchemaFrom:to:)]) {\n       [store migrateSchemaFrom:oldV to:newV];\n   } else {\n       // log and fall back\n   }\n   ```\n\n## 6. The fix (user-side)\n1. Nothing on your Mac caused this \u2014 the app shipped with a mismatched internal component, so it will crash on every launch until the developer ships a rebuild.\n2. Delete Fernpost from `/Applications`, then reinstall version 3.0.0 fresh from the developer's official download or the Mac App Store, in case your copy was partially updated.\n3. If it still quits instantly, check for a newer version than 3.0.0 (3000) and install it.\n4. Report the crash to the developer and include this line verbatim: `-[FPMessageStore migrateSchemaFrom:to:]: unrecognized selector` \u2014 it points them straight at the fix.\n\nmacOS Crash Report Analyzer v1.1"
+    }
+  ]
+}

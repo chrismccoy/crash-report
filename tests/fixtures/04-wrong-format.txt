@@ -1,0 +1,21 @@
+Traceback (most recent call last):
+  File "/srv/app/ingest/worker.py", line 214, in run_batch
+    payload = self.deserialize(record.body)
+  File "/srv/app/ingest/worker.py", line 91, in deserialize
+    return json.loads(raw.decode("utf-8"))
+  File "/usr/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/usr/lib/python3.12/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/usr/lib/python3.12/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/srv/app/ingest/main.py", line 58, in <module>
+    worker.run_batch(queue.poll(timeout=30))
+  File "/srv/app/ingest/worker.py", line 220, in run_batch
+    raise IngestError("batch failed") from exc
+app.errors.IngestError: batch failed

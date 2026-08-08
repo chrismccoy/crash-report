@@ -1,0 +1,18 @@
+Process:               VectorDraw [88120]
+Path:                  /Applications/VectorDraw.app/Contents/MacOS/VectorDraw
+Identifier:            com.example.vectordraw
+Version:               7.0.2 (7020)
+Code Type:             ARM-64 (Native)
+Parent Process:        launchd [1]
+User ID:               501
+
+Date/Time:             2026-04-18 11:55:20.3310 -0400
+OS Version:            macOS 15.3 (24D60)
+Report Version:        12
+Anonymous UUID:        7E1D9C33-4B02-4A19-B8F7-2C6D0E5A9147
+
+Time Awake Since Boot: 42000 seconds
+
+System Integrity Protection: enabled
+
+Crashed Thread:        2  com.example.vectordraw.exp
